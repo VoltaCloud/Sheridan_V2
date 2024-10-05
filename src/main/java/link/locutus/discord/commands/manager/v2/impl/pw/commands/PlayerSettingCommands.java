@@ -1,41 +1,47 @@
 package link.locutus.discord.commands.manager.v2.impl.pw.commands;
 
 import link.locutus.discord.Locutus;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Arg;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Range;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
+import link.locutus.discord.apiv1.enums.ResourceType;
+import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.CoalitionPermission;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePermission;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.WhitelistPermission;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.config.Settings;
+import link.locutus.discord.db.BankDB;
 import link.locutus.discord.db.DiscordDB;
 import link.locutus.discord.db.GuildDB;
-import link.locutus.discord.db.entities.Coalition;
-import link.locutus.discord.db.entities.NationMeta;
+import link.locutus.discord.db.TradeDB;
+import link.locutus.discord.db.entities.*;
 import link.locutus.discord.db.entities.announce.AnnounceType;
 import link.locutus.discord.db.entities.announce.Announcement;
-import link.locutus.discord.db.entities.DBNation;
-import link.locutus.discord.db.entities.DiscordMeta;
+import link.locutus.discord.db.guild.GuildKey;
+import link.locutus.discord.pnw.NationOrAlliance;
 import link.locutus.discord.user.Roles;
-import link.locutus.discord.util.MathMan;
-import link.locutus.discord.util.RateLimitUtil;
-import link.locutus.discord.util.StringMan;
+import link.locutus.discord.util.*;
 import link.locutus.discord.util.discord.DiscordUtil;
+import link.locutus.discord.util.math.ArrayUtil;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.User;
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import org.apache.commons.lang3.StringUtils;
+import org.json.JSONObject;
 
 import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import static link.locutus.discord.util.math.ArrayUtil.MathOperator.*;
 
 public class PlayerSettingCommands {
 
     @Command(desc = "View an announcement you have access to")
     @RolePermission(Roles.MEMBER)
+    @Ephemeral
     public String viewAnnouncement(@Me IMessageIO io, @Me GuildDB db, @Me DBNation me, @Me User user, int ann_id, @Switch("d") boolean document, @Switch("n") DBNation nation) throws IOException {
         if (nation == null) nation = me;
         if (nation.getId() != me.getId() && !Roles.INTERNAL_AFFAIRS.has(user, db.getGuild())) {
@@ -44,7 +50,6 @@ public class PlayerSettingCommands {
         Announcement parent = db.getAnnouncement(ann_id);
         boolean isInvite = StringUtils.countMatches(parent.replacements, ",") == 2 && !parent.replacements.contains("|") && !parent.replacements.contains("\n");
         AnnounceType type = isInvite ? AnnounceType.INVITE : document ? AnnounceType.DOCUMENT : AnnounceType.MESSAGE;
-        System.out.println("Type " + type + " | " + isInvite + " | `" + parent.replacements + "` | " + StringMan.countWords(parent.replacements, ",") + " | " + parent.replacements.contains("|") + " | " + parent.replacements.contains("\n"));
         if (type == AnnounceType.INVITE) {
             String[] split = parent.replacements.split(",");
             if (!parent.replacements.isEmpty() && split.length > 0 && MathMan.isInteger(split[0])) {
@@ -120,30 +125,72 @@ public class PlayerSettingCommands {
         return "Set " + DiscordMeta.OPT_OUT + " to " + optOut;
     }
 
-    @Command(desc = "Opt out of audit alerts")
-    @RolePermission(Roles.MEMBER)
-    public String auditAlertOptOut(@Me Member member, @Me DBNation me, @Me Guild guild, @Me GuildDB db) {
-        Role role = Roles.AUDIT_ALERT_OPT_OUT.toRole(guild);
-        if (role == null) {
-            role = RateLimitUtil.complete(guild.createRole().setName(Roles.AUDIT_ALERT_OPT_OUT.name()));
-            db.addRole(Roles.AUDIT_ALERT_OPT_OUT, role, 0);
+    public static String handleOptOut(Member member, GuildDB db, Roles lcRole, Boolean forceOptOut, Roles... optInRoles) {
+        Guild guild = db.getGuild();
+        List<Role> optInDiscRoles = new ArrayList<>();
+        for (Roles r : optInRoles) {
+            Role discR = r.toRole(guild);
+            if (discR != null) {
+                optInDiscRoles.add(discR);
+            }
         }
-        RateLimitUtil.queue(guild.addRoleToMember(member, role));
-        return "Opted out of audit alerts";
-    }
+        List<String> notes = new ArrayList<>();
+        if (optInDiscRoles.isEmpty() && optInRoles.length > 0) {
+            notes.add("No role `" + Arrays.stream(optInRoles).map(Roles::name).collect(Collectors.joining("`, `")) + "` is set. Have an admin use e.g. " + CM.role.setAlias.cmd.locutusRole(optInRoles[0].name()).discordRole("@someRole"));
+        }
+        Role role = lcRole.toRole(guild);
+        if (role == null) {
+            // find role by name
+            List<Role> roles = db.getGuild().getRolesByName(lcRole.name(), true);
+            if (!roles.isEmpty()) {
+                role = roles.get(0);
+                db.addRole(lcRole, role, 0);
+            } else {
+                role = RateLimitUtil.complete(guild.createRole().setName(lcRole.name()));
+                db.addRole(lcRole, role, 0);
+            }
+        }
 
-    @Command
-    public String enemyAlertOptOut(@Me GuildDB db, @Me User user, @Me Member member, @Me Guild guild) {
-        Role role = Roles.WAR_ALERT_OPT_OUT.toRole(guild);
-        if (role == null) {
-            role = RateLimitUtil.complete(guild.createRole().setName(Roles.WAR_ALERT_OPT_OUT.name()));
-            db.addRole(Roles.WAR_ALERT_OPT_OUT, role, 0);
+        List<Role> memberRoles = member.getRoles();
+        boolean hasAnyOptIn = optInDiscRoles.stream().anyMatch(memberRoles::contains);
+        if (memberRoles.contains(role)) {
+            if (forceOptOut == Boolean.TRUE) {
+                return "You are already opted out of " + lcRole.name() + " alerts";
+            }
+            RateLimitUtil.complete(guild.removeRoleFromMember(member, role));
+            String msg;
+            if (!optInDiscRoles.isEmpty() && !hasAnyOptIn) {
+                msg = "Your opt out role has been removed (@" + role.getName() + " removed) however you lack a role required to opt back in (@" + Arrays.stream(optInRoles).map(Roles::name).collect(Collectors.joining(", @")) + ")";
+            } else {
+                msg = "Opted back in to " + lcRole.name() + " alerts (@" + role.getName() + " removed)";
+            }
+            msg += ". Use the command again to opt out";
+            return msg;
         }
-        if (member.getRoles().contains(role)) {
-            return "You are already opted out with the role for " + Roles.WAR_ALERT_OPT_OUT.name();
+        if (forceOptOut == Boolean.FALSE) {
+            if (!optInDiscRoles.isEmpty() && !hasAnyOptIn) {
+                return "You do not have the opt out role (@" + role.getName() + ") however lack a role to opt in (@" + Arrays.stream(optInRoles).map(Roles::name).collect(Collectors.joining(", @")) + ")";
+            }
+            return "You are already opted in to " + lcRole.name() + " alerts";
         }
         RateLimitUtil.complete(guild.addRoleToMember(member, role));
-        return "You have been opted out of " + Roles.WAR_ALERT_OPT_OUT.name() + " alerts";
+        return "Opted out of " + lcRole.name() + " alerts (@" + role.getName() + " added to your user). Use the command again to opt back in";
+    }
+
+    @Command(desc = "Toggle your opt out of audit alerts")
+    @RolePermission(Roles.MEMBER)
+    public String auditAlertOptOut(@Me Member member, @Me DBNation me, @Me Guild guild, @Me GuildDB db) {
+        return PlayerSettingCommands.handleOptOut(member, db, Roles.AUDIT_ALERT_OPT_OUT, null);
+    }
+
+    @Command(desc = "Toggle your opt out of enemy alerts")
+    public String enemyAlertOptOut(@Me GuildDB db, @Me User user, @Me Member member, @Me Guild guild) {
+        return PlayerSettingCommands.handleOptOut(member, db, Roles.WAR_ALERT_OPT_OUT, null, Roles.ENEMY_ALERT_OFFLINE, Roles.BEIGE_ALERT);
+    }
+
+    @Command(desc = "Toggle your opt out of bounty alerts")
+    public String bountyAlertOptOut(@Me GuildDB db, @Me User user, @Me Member member, @Me Guild guild) {
+        return PlayerSettingCommands.handleOptOut(member, db, Roles.BOUNTY_ALERT_OPT_OUT, null, Roles.BOUNTY_ALERT);
     }
 
     @Command(desc = "Set the required transfer market value required for automatic bank alerts\n" +
@@ -160,4 +207,132 @@ public class PlayerSettingCommands {
         return "Set bank alert required value to $" + MathMan.format(requiredValue);
     }
 
+    @Command(desc = "Get an alert when a nation or alliance sends a large bank transfer\n" +
+            "Use `*` to subscribe to all nations")
+    @WhitelistPermission
+    @RolePermission(Roles.MEMBER)
+    public String bankAlert(@Me GuildDB db, @Me User author,
+                            @Me JSONObject command,
+            Set<NationOrAlliance> nation_or_alliances,
+                            @ArgChoice({"send", "receive"}) String send_or_receive,
+                            long amount,
+                            @Timediff long duration) {
+        MessageChannel channel = GuildKey.LARGE_TRANSFERS_CHANNEL.get(db);
+        boolean isReceive = send_or_receive.equalsIgnoreCase("receive");
+
+        Set<Integer> ids;
+        BankDB.BankSubType recType;
+        if (command.getString("nation_or_alliances").equals("*")) {
+            ids = Collections.singleton(0);
+            recType = BankDB.BankSubType.ALL;
+        } else {
+            ids = nation_or_alliances.stream().map(NationOrAlliance::getId).collect(Collectors.toSet());
+            boolean hasNation = nation_or_alliances.stream().anyMatch(NationOrAlliance::isNation);
+            boolean hasAlliance = nation_or_alliances.stream().anyMatch(NationOrAlliance::isAlliance);
+            if (hasNation && hasAlliance) {
+                throw new IllegalArgumentException("Cannot mix nations and alliances");
+            }
+            recType = hasNation ? BankDB.BankSubType.NATION : BankDB.BankSubType.ALLIANCE;
+        }
+        if (ids.size() > 15) {
+            throw new IllegalArgumentException("Too many nations/alliances (max: 15, provided: " + ids.size() + ")");
+        }
+        long cutoff = System.currentTimeMillis() + duration;
+        for (int id : ids) {
+            Locutus.imp().getBankDB().subscribe(author, id, recType, cutoff, isReceive, amount);
+        }
+        return "Subscribed to `" + command + "` in " + channel.getAsMention() +
+                "\nCheck your subscriptions with: " + CM.alerts.bank.list.cmd.toSlashMention();
+    }
+
+    @Command(desc = "List your subscriptions to large bank transfers")
+    @WhitelistPermission
+    @RolePermission(Roles.MEMBER)
+    public String bankAlertList(@Me User author,
+                                @Me GuildDB db, @Me IMessageIO io) {
+        GuildKey.LARGE_TRANSFERS_CHANNEL.get(db);
+        Set<BankDB.Subscription> subscriptions = Locutus.imp().getBankDB().getSubscriptions(author.getIdLong());
+        if (subscriptions.isEmpty()) {
+            return "No subscriptions. Subscribe to get alerts using " + CM.alerts.bank.subscribe.cmd.toSlashMention();
+        }
+
+        for (BankDB.Subscription sub : subscriptions) {
+            String name;
+            String url;
+            if (sub.allianceOrNation == 0) {
+                name = "*";
+                if (sub.type == BankDB.BankSubType.ALL) {
+                    url = name;
+                } else {
+                    String type = sub.type == BankDB.BankSubType.NATION ? "nation" : "alliance";
+                    url = "" + Settings.INSTANCE.PNW_URL() + "/" + type + "/id=" + sub.allianceOrNation;
+                }
+            } else if (sub.type == BankDB.BankSubType.NATION) {
+                DBNation nation = Locutus.imp().getNationDB().getNation(sub.allianceOrNation);
+                url = "" + Settings.INSTANCE.PNW_URL() + "/nation/id=" + sub.allianceOrNation;
+                name = String.format("[%s](%s)",
+                        nation == null ? sub.allianceOrNation : nation.getNation(), url);
+            } else {
+                String aaName = Locutus.imp().getNationDB().getAllianceName(sub.allianceOrNation);
+                if (aaName == null) aaName = sub.allianceOrNation + "";
+                url = "" + Settings.INSTANCE.PNW_URL() + "/alliance/id=" + sub.allianceOrNation;
+                name = String.format("[%s](%s)",
+                        aaName, url);
+            }
+            String dateStr = TimeUtil.YYYY_MM_DD_HH_MM_SS.format(new Date(sub.endDate)) + " (UTC)";
+            String sendReceive = sub.isReceive ? "received" : "deposited";
+
+            String title = name + " " + sendReceive + " > " + MathMan.format(sub.amount);
+
+            String body = "Expires " + dateStr;
+
+            String emoji = "Unsubscribe";
+            CM.alerts.bank.unsubscribe unsubCommand = CM.alerts.bank.unsubscribe.cmd.nation_or_alliances(url);
+
+            io.create().embed(title, body)
+                    .commandButton(unsubCommand, emoji).send();
+        }
+
+        if (subscriptions.isEmpty()) {
+            return "No subscriptions";
+        }
+        return null;
+    }
+
+    @Command(desc = "Remove your subscriptions to large bank transfers")
+    @WhitelistPermission
+    @RolePermission(Roles.MEMBER)
+    public String bankAlertUnsubscribe(@Me GuildDB db, @Me JSONObject command, @Me User author,
+                                       Set<NationOrAlliance> nation_or_alliances) {
+        GuildKey.LARGE_TRANSFERS_CHANNEL.get(db);
+        BankDB bankDb = Locutus.imp().getBankDB();
+        if (command.getString("nation_or_alliances").equals("*")) {
+            bankDb.unsubscribe(author, 0, BankDB.BankSubType.ALL);
+            bankDb.unsubscribeAll(author.getIdLong());
+            return "Unsubscribed from ALL bank alerts";
+        }
+        // get subscriptions
+        Set<Integer> aaIds = nation_or_alliances.stream().filter(f -> f.isAlliance()).map(f -> f.getId()).collect(Collectors.toSet());
+        Set<Integer> nationIds = nation_or_alliances.stream().filter(f -> f.isNation()).map(f -> f.getId()).collect(Collectors.toSet());
+        Set<BankDB.Subscription> subscriptions = bankDb.getSubscriptions(author.getIdLong());
+        int numUnsubscribed = 0;
+        for (BankDB.Subscription sub : subscriptions) {
+            if (sub.allianceOrNation == 0) continue;
+            if (sub.type == BankDB.BankSubType.NATION) {
+                if (nationIds.contains(sub.allianceOrNation)) {
+                    bankDb.unsubscribe(author, sub.allianceOrNation, BankDB.BankSubType.NATION);
+                    numUnsubscribed++;
+                }
+            } else {
+                if (aaIds.contains(sub.allianceOrNation)) {
+                    bankDb.unsubscribe(author, sub.allianceOrNation, BankDB.BankSubType.ALLIANCE);
+                    numUnsubscribed++;
+                }
+            }
+        }
+        if (numUnsubscribed == 0) {
+            return "No subscriptions found matching the provided nations/alliances. See " + CM.alerts.bank.list.cmd.toSlashMention();
+        }
+        return "Unsubscribed from `" + numUnsubscribed + "`" + " alerts";
+    }
 }

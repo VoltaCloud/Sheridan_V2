@@ -3,7 +3,9 @@ package link.locutus.discord.commands.account;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.guild.SheetKey;
@@ -29,6 +31,11 @@ public class CheckMail extends Command {
     }
 
     @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.mail.search.cmd);
+    }
+
+    @Override
     public String help() {
         return super.help() + " <query> <checkUnread=true> <checkRead=false> <readContent=true>";
     }
@@ -51,21 +58,13 @@ public class CheckMail extends Command {
         channel.sendMessage("Please wait...");
 
         GuildDB db = Locutus.imp().getGuildDB(guild);
-        SpreadSheet sheet = SpreadSheet.create(db, SheetKey.MAIL_RESPONSES_SHEET);
 
-        List<String> header = new ArrayList<>(Arrays.asList(
-                "nation",
-                "alliance",
-                "mail-id",
-                "subject",
-                "response"
-        ));
-
-        sheet.setHeader(header);
 
         boolean checkUnread = Boolean.parseBoolean(args.get(1));
         boolean checkRead = Boolean.parseBoolean(args.get(2));
         boolean readContent = Boolean.parseBoolean(args.get(3));
+        boolean group = flags.contains('g');
+        boolean count = flags.contains('c');
 
         Map<DBNation, Map<Mail, List<String>>> results = new LinkedHashMap<>();
 
@@ -77,8 +76,17 @@ public class CheckMail extends Command {
         });
         task.call();
 
-        boolean group = flags.contains('g');
-        boolean count = flags.contains('g');
+        SpreadSheet sheet = SpreadSheet.create(db, SheetKey.MAIL_RESPONSES_SHEET);
+
+        List<String> header = new ArrayList<>(Arrays.asList(
+                "nation",
+                "alliance",
+                "mail-id",
+                "subject",
+                "response"
+        ));
+
+        sheet.setHeader(header);
 
         List<Object> row = new ArrayList<>();
         for (Map.Entry<DBNation, Map<Mail, List<String>>> entry : results.entrySet()) {

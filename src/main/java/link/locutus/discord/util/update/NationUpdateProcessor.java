@@ -12,9 +12,8 @@ import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
-import link.locutus.discord.commands.rankings.table.TimeFormat;
-import link.locutus.discord.commands.rankings.table.TimeNumericTable;
-import link.locutus.discord.commands.trade.subbank.BankAlerts;
+import link.locutus.discord.commands.manager.v2.table.TimeFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeNumericTable;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.*;
@@ -48,16 +47,7 @@ import org.apache.commons.collections4.map.PassiveExpiringMap;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
@@ -316,7 +306,7 @@ public class NationUpdateProcessor {
         }
         body.append("\n" + ban.reason + "\nDays Left: `" + ban.days_left + "`\n");
 
-        String title = "Nation Banned: " + PW.getName(ban.nation_id, true) + "/" + ban.nation_id;
+        String title = "Nation Banned: " + PW.getName(ban.nation_id, false) + "/" + ban.nation_id;
 
         if (ban.discord_id != 0) {
             User user = DiscordUtil.getUser(ban.discord_id);
@@ -438,6 +428,12 @@ public class NationUpdateProcessor {
 
                     Guild guild = guildDB.getGuild();
                     Role bountyRole = Roles.BEIGE_ALERT.toRole(guild);
+                    Role bountyRoleOffline = Roles.ENEMY_ALERT_OFFLINE.toRole(guild);
+                    boolean checkDiscord = true;
+                    if (bountyRole == null) {
+                        bountyRole = bountyRoleOffline;
+                        checkDiscord = false;
+                    }
                     if (bountyRole == null) {
                         msg.send();
                         return;
@@ -461,8 +457,11 @@ public class NationUpdateProcessor {
                             if (attacker == null) continue;
 
                             OnlineStatus status = member.getOnlineStatus();
-                            if (attacker.active_m() > 15 && (status == OnlineStatus.OFFLINE || status == OnlineStatus.INVISIBLE))
-                                continue;
+                            if (attacker.active_m() > 15 && checkDiscord && (status == OnlineStatus.OFFLINE || status == OnlineStatus.INVISIBLE)) {
+                                if (bountyRoleOffline == null || !member.getRoles().contains(bountyRoleOffline)) {
+                                    continue;
+                                }
+                            }
                             if (optOut != null && member.getRoles().contains(optOut)) continue;
 
                             if (/* attacker.active_m() > 1440 || */attacker.getDef() >= 3 || attacker.getVm_turns() != 0 || attacker.isBeige())
@@ -590,7 +589,7 @@ public class NationUpdateProcessor {
                         continue;
                     }
 
-                    NationMeta.BeigeAlertMode mode = attacker.getBeigeAlertMode(NationMeta.BeigeAlertMode.NONES);
+                    NationMeta.BeigeAlertMode mode = attacker.getBeigeAlertMode(NationMeta.BeigeAlertMode.NO_ALERTS);
                     if (mode == NationMeta.BeigeAlertMode.NO_ALERTS) continue;
                     if (mode == null) mode = NationMeta.BeigeAlertMode.NONES;
 
@@ -625,7 +624,7 @@ public class NationUpdateProcessor {
             if (position == null || !position.hasAnyAdminPermission()) return;
         }
         DBAlliance alliance = previous.getAlliance(false);
-        if (alliance.getRank() < 50) {
+        if (alliance != null && alliance.getRank() < 50) {
             String title = previous.getNation() + " (" + Rank.byId(previous.getPosition()) + ") deleted from " + previous.getAllianceName();
             String body = previous.toEmbedString();
             AlertUtil.forEachChannel(f -> true, GuildKey.ORBIS_OFFICER_LEAVE_ALERTS, new BiConsumer<MessageChannel, GuildDB>() {
@@ -741,7 +740,10 @@ public class NationUpdateProcessor {
         long now = System.currentTimeMillis();
         long cutoff = now - TimeUnit.DAYS.toMillis(1);
         List<AllianceChange> removes = new ArrayList<>(alliance.getRankChanges(cutoff));
-        Map<Integer, AllianceChange> changesByNation = removes.stream().collect(Collectors.toMap(AllianceChange::getNationId, f -> f));
+        Map<Integer, AllianceChange> changesByNation = new LinkedHashMap<>();
+        for (AllianceChange change : removes) {
+            changesByNation.put(change.getNationId(), change);
+        }
         changesByNation.put(current.getNation_id(), new AllianceChange(previous, current, now));
 
         for (Map.Entry<Integer, AllianceChange> entry : changesByNation.entrySet()) {
@@ -771,7 +773,7 @@ public class NationUpdateProcessor {
             }
         }
 
-        CM.alliance.departures cmd = CM.alliance.departures.cmd.create(alliance.getQualifiedId(), "7d", "*,#alliance_id!=" + alliance.getId(), "true", "true", null, null, null);
+        CM.alliance.departures cmd = CM.alliance.departures.cmd.nationOrAlliance(alliance.getQualifiedId()).time("7d").filter("*,#alliance_id!=" + alliance.getId()).ignoreInactives("true").ignoreVM("true");
 
         if (memberRemoves >= 5) {
             Map<DBAlliance, Integer> ranks = Locutus.imp().getNationDB().getAllianceRanks(f -> f.getVm_turns() == 0 && f.getPositionEnum().id > Rank.MEMBER.id, true);
@@ -894,9 +896,7 @@ public class NationUpdateProcessor {
             try {
                 for (Map.Entry<Long, GuildDB> entry : Locutus.imp().getGuildDatabases().entrySet()) {
                     GuildDB guildDB = entry.getValue();
-                    Integer perm = guildDB.getPermission(BankAlerts.class);
-                    if (perm == null || perm <= 0) continue;
-                    MessageChannel channel = guildDB.getOrNull(GuildKey.BANK_ALERT_CHANNEL, false);
+                    MessageChannel channel = guildDB.getOrNull(GuildKey.VM_ALERT_CHANNEL, false);
                     if (channel == null) {
                         continue;
                     }
@@ -944,7 +944,7 @@ public class NationUpdateProcessor {
             String finalType = type;
             String finalBody = body.toString();
             String title = "Detected " + finalType + ": " + previous.getNation() + " | " + "" + Settings.INSTANCE.PNW_URL() + "/nation/id=" + previous.getNation_id() + " | " + previous.getAllianceName();
-            AlertUtil.forEachChannel(BankAlerts.class, GuildKey.DELETION_ALERT_CHANNEL, new BiConsumer<MessageChannel, GuildDB>() {
+            AlertUtil.forEachChannel(f -> true, GuildKey.DELETION_ALERT_CHANNEL, new BiConsumer<MessageChannel, GuildDB>() {
                 @Override
                 public void accept(MessageChannel channel, GuildDB db) {
                     AlertUtil.displayChannel(title, finalBody, channel.getIdLong());

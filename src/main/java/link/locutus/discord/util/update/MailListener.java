@@ -2,6 +2,7 @@ package link.locutus.discord.util.update;
 
 import com.google.common.eventbus.Subscribe;
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.apiv1.enums.MilitaryUnit;
 import link.locutus.discord.commands.manager.v2.binding.Key;
 import link.locutus.discord.commands.manager.v2.binding.LocalValueStore;
@@ -74,7 +75,7 @@ public class MailListener {
         GuildMessageChannel channel = event.getChannel();
         if (channel == null) {
             new Exception().printStackTrace();
-            System.out.println("No channel found for mail " + event.getAuth().getNationId() + " | " + event.getDefaultChannelId());
+            Logg.text("No channel found for mail `nation:" + event.getAuth().getNationId() + "` | " + event.getDefaultChannelId());
             return;
         }
         String body = event.toEmbedString();
@@ -86,11 +87,18 @@ public class MailListener {
         if (role != null) {
             builder.append("^ " + role.getAsMention());
         }
-
-        builder.embed(event.getTitle(), body.toString());
+        int authId = event.getAuth().getNationId();
         DBNation receiver = Locutus.imp().getNationDB().getNationByLeader(event.getMail().leader);
-        CM.mail.reply mailCmd = CM.mail.reply.cmd.create(receiver.getNation(), event.getUrl(), null, event.getAuth().getNationId() + "");
-        builder.modal(CommandBehavior.DELETE_PRESSED_BUTTON, mailCmd, "\uD83D\uDCE7 Reply");
+        if (receiver.getId() == authId) {
+            body += "\n\nUse " + CM.mail.reply.cmd.toSlashMention() + " (with `sender:" + authId + "` and then the recipient) to reply to this message.";
+        }
+        builder.embed(event.getTitle(), body.toString());
+        if (receiver.getId() != authId) {
+            CM.mail.reply mailCmd = CM.mail.reply.cmd.receiver(receiver.getId() + "").url(event.getUrl()).message("").sender(event.getAuth().getNationId() + "");
+            builder.modal(CommandBehavior.UNPRESS, mailCmd, "\uD83D\uDCE7 Reply");
+        }
+
+        builder.commandButton(CommandBehavior.UNPRESS, CM.mail.read.cmd.message_id(event.getMail().id + "").account(authId + ""), "Read");
         builder.send();
 
         processCommands(Locutus.imp().getGuildDB(guild), guild, outputBuilder, event);
@@ -123,12 +131,12 @@ public class MailListener {
             StringBuilder remaining = new StringBuilder();
             CommandCallable callable = commands.getCallable(msg, remaining);
             if (callable == null) {
-                System.out.println("No command found for: `" + msg + "`");
+                Logg.text("No command found for: `" + msg + "`");
                 return;
             }
 
             List<String> args = remaining.isEmpty() ? new ArrayList<>() : StringMan.split(remaining.toString(), " ");
-            System.out.println("Running mail command `" + msg + "`");
+            Logg.text(nation.getMarkdownUrl() + " Running mail command `" + msg + "` in message `" + subject + "`");
             LocalValueStore locals = createLocals(db, guild, io, event, msg);
             ArgumentStack stack = new ArgumentStack(args, locals, validators, permisser);
             Object response = callable.call(stack);

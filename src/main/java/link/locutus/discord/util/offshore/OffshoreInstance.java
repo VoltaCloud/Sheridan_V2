@@ -156,7 +156,6 @@ public class OffshoreInstance {
 
         if (lastFunds2 != null && checkLast) {
             if (Arrays.equals(lastFunds2, stockpile)) {
-                System.out.println("Funds are the same");
                 outOfSync.set(false);
                 return true;
             }
@@ -173,7 +172,6 @@ public class OffshoreInstance {
 
         int finalBankMetaI = bankMetaI;
         if (!Settings.USE_V2) {
-            System.out.println("Fetch alliance bank records");
             List<Bankrec> bankRecs = api.fetchAllianceBankRecs(allianceId, f -> {
                 f.or_id(List.of(allianceId));
                 f.rtype(List.of(2));
@@ -199,8 +197,6 @@ public class OffshoreInstance {
                     minDate = Math.min(minDate, tx.tx_datetime);
                 }
 
-                // add transactions
-                System.out.println("Add " + bankRecs.size());
                 Locutus.imp().runEventsAsync(events -> Locutus.imp().getBankDB().saveBankRecs(bankRecs, events));
 
                 if (bankRecs.size() > 0) {
@@ -526,8 +522,9 @@ public class OffshoreInstance {
             return new TransferResult(TransferStatus.INVALID_NOTE, receiver, amount, depositType.toString()).addMessage("Please use `" + DepositType.IGNORE + "` as the `depositType` when transferring to alliances");
         }
 
+        boolean escrowSetting = GuildKey.MEMBER_CAN_ESCROW.getOrNull(senderDB) == Boolean.TRUE;
         boolean allowEscrow = escrowMode == EscrowMode.ALWAYS || (escrowMode == EscrowMode.WHEN_BLOCKADED && receiver.isNation());
-        boolean escrowFunds = receiver.isNation() && receiver.asNation().isBlockaded();
+        boolean escrowFunds = (allowEscrow || escrowSetting) && receiver.isNation() && receiver.asNation().isBlockaded();
 
         if (!bypassChecks && receiver.isNation()) {
             DBNation nation = receiver.asNation();
@@ -694,7 +691,7 @@ public class OffshoreInstance {
                 if (disabledNations.containsKey(nationAccount.getId())) {
                     // Account temporarily disabled due to error. Use CM.bank.unlockTransfers.cmd.toSlashMention() to re-enable
 //                    return Map.entry(TransferStatus.AUTHORIZATION, "Transfers are temporarily disabled for this account due to an error. Have a server admin use " + CM.bank.unlockTransfers.cmd.toSlashMention() + " to re-enable");
-                    return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, depositType.toString()).addMessage("Transfers are temporarily disabled for this account due to an error.", "Have a server admin use " + CM.bank.unlockTransfers.cmd.create(nationAccount.getId() + "", null) + " in " + getGuild());
+                    return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, depositType.toString()).addMessage("Transfers are temporarily disabled for this account due to an error.", "Have a server admin use " + CM.bank.unlockTransfers.cmd.nationOrAllianceOrGuild(nationAccount.getId() + "") + " in " + getGuild());
                 }
                 if (!depositType.isDeposits() || depositType.isIgnored()) {
                     allowedIds.entrySet().removeIf(f -> f.getValue() != AccessType.ECON);
@@ -744,7 +741,7 @@ public class OffshoreInstance {
                     if (missing != null) {
                         if (!rssConversion) {
                             String[] msg = {nationAccount.getMarkdownUrl() + " is missing `" + ResourceType.resourcesToString(missing) + "`. (see " +
-                                    CM.deposits.check.cmd.create(nationAccount.getUrl(), null, null, null, null, null, null, null, null, null, null) +
+                                    CM.deposits.check.cmd.nationOrAllianceOrGuild(nationAccount.getUrl()) +
                                     " ).", "RESOURCE_CONVERSION is disabled (see " +
                                     GuildKey.RESOURCE_CONVERSION.getCommandObj(senderDB, true) +
                                     ")"};
@@ -802,7 +799,7 @@ public class OffshoreInstance {
                     if (missing != null) {
                         if (!rssConversion) {
                             String[] msg = {taxAccount.getQualifiedId() + " is missing `" + ResourceType.resourcesToString(missing) + "`. (see " +
-                                    CM.deposits.check.cmd.create(taxAccount.getQualifiedId(), null, null, null, null, null, null, null, null, null, null) +
+                                    CM.deposits.check.cmd.nationOrAllianceOrGuild(taxAccount.getQualifiedId()) +
                                     " ).", "RESOURCE_CONVERSION is disabled (see " +
                                     GuildKey.RESOURCE_CONVERSION.getCommandObj(senderDB, true) +
                                     ")"};
@@ -981,6 +978,10 @@ public class OffshoreInstance {
                     for (int i = 0; i < amount.length; i++) {
                         balance[i] += amount[i];
                     }
+                    if (!isInternalTransfer && !depositType.isIgnored()) {
+                        if (nationAccount == null) nationAccount = receiver.asNation();
+                        senderDB.subtractBalance(timestamp, nationAccount, bankerNation.getNation_id(), note, amount);
+                    }
                     senderDB.setEscrowed(receiver.asNation(), balance, escrowDate);
                 }
 //                result = Map.entry(TransferStatus.SUCCESS, "Escrowed `" + PW.resourcesToString(amount) + "` for " + receiver.getName() + ". use " + CM.escrow.withdraw.cmd.toSlashMention() + " to withdraw.");
@@ -1107,7 +1108,7 @@ public class OffshoreInstance {
             return new TransferResult(TransferStatus.NOTHING_WITHDRAWN, receiver, amount, note).addMessage("You did not withdraw anything.");
         }
 
-        if (DISABLE_TRANSFERS && (banker == null || banker.getNation_id() != Settings.INSTANCE.NATION_ID)) {
+        if (DISABLE_TRANSFERS && (banker == null || banker.getNation_id() != Locutus.loader().getNationId())) {
 //            return Map.entry(TransferStatus.AUTHORIZATION, "Error: Maintenance. Transfers are currently disabled");
             return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, note).addMessage("Error: Maintenance. Transfers are currently disabled");
         }
@@ -1184,7 +1185,7 @@ public class OffshoreInstance {
             }
 
             if (isDisabled(senderDB.getIdLong())) {
-                return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, note).addMessage("There was an error transferring funds (failed to fetch bank stockpile). Please have an admin use " + CM.offshore.unlockTransfers.cmd.create(senderDB.getIdLong() + "", null) + " in the offshore server (" + getGuild() + ")");
+                return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, note).addMessage("There was an error transferring funds (failed to fetch bank stockpile). Please have an admin use " + CM.offshore.unlockTransfers.cmd.nationOrAllianceOrGuild(senderDB.getIdLong() + "") + " in the offshore server (" + getGuild() + ")");
             }
 
             boolean hasAdmin = false;
@@ -1213,7 +1214,7 @@ public class OffshoreInstance {
             if (route) {
                 boolean hasNonAlliance = depositsByAA.keySet().stream().anyMatch(n -> !n.isAlliance());
                 if (hasNonAlliance || depositsByAA.isEmpty()) {
-                    return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, note).addMessage("`" + GuildKey.ROUTE_ALLIANCE_BANK.name() + "` is enabled, but this server is not registered to an alliance. Disable with " + CM.settings.delete.cmd.create(GuildKey.ROUTE_ALLIANCE_BANK.name()));
+                    return new TransferResult(TransferStatus.AUTHORIZATION, receiver, amount, note).addMessage("`" + GuildKey.ROUTE_ALLIANCE_BANK.name() + "` is enabled, but this server is not registered to an alliance. Disable with " + CM.settings.delete.cmd.key(GuildKey.ROUTE_ALLIANCE_BANK.name()));
                 }
             }
 
@@ -1277,7 +1278,7 @@ public class OffshoreInstance {
                 case CONFIRMATION:
                 default:
                 case OTHER:
-                    log(senderDB, banker, receiver, "Unknown result: " + result + " | <@" + Settings.INSTANCE.ADMIN_USER_ID + ">");
+                    log(senderDB, banker, receiver, "Unknown result: " + result + " | <@" + Locutus.loader().getAdminUserId() + ">");
                 case SUCCESS:
                 case SENT_TO_ALLIANCE_BANK: {
                     {
@@ -1317,7 +1318,7 @@ public class OffshoreInstance {
                                 NationOrAllianceOrGuild account = entry.getKey();
                                 body.append("\n- `!addbalance " + account.getTypePrefix() + ":" + account.getId() + " " + ResourceType.resourcesToString(entry.getValue()) + " #deposit");
                             }
-                            body.append("\n<@" + Settings.INSTANCE.ADMIN_USER_ID + ">");
+                            body.append("\n<@" + Locutus.loader().getAdminUserId() + ">");
                             log(senderDB, banker, receiver, title + ": " + body.toString());
                         }
                     }
@@ -1568,7 +1569,7 @@ public class OffshoreInstance {
             WebRoot web = WebRoot.getInstance();
 
             BankRequestHandler handler = web.getLegacyBankHandler();
-            if (auth.getNationId() != Settings.INSTANCE.NATION_ID || auth.getAllianceId() != allianceId) {
+            if (auth.getNationId() != Locutus.loader().getNationId() || auth.getAllianceId() != allianceId) {
                 throw new IllegalArgumentException("Game API is down currently");
             }
 

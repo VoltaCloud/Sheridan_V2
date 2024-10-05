@@ -31,41 +31,44 @@ public class RawsTemplate extends AGrantTemplate<Integer>{
                 rs.getLong("expire"),
                 rs.getLong("decay"),
                 rs.getBoolean("allow_ignore"),
-                rs.getBoolean("repeatable"));
+                rs.getLong("repeatable"));
     }
 
     // create new constructor  with typed parameters instead of resultset
-    public RawsTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, long days, long overdrawPercentCents, long expiryOrZero, long decayOrZero, boolean allowIgnore, boolean repeatable) {
-        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable);
+    public RawsTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, long days, long overdrawPercentCents, long expiryOrZero, long decayOrZero, boolean allowIgnore, long repeatable_time) {
+        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable_time);
         this.days = days;
         this.overdrawPercent = overdrawPercentCents;
     }
 
     @Override
     public String getCommandString(String name, String allowedRecipients, String econRole, String selfRole, String bracket, String useReceiverBracket, String maxTotal, String maxDay, String maxGranterDay, String maxGranterTotal, String allowExpire, String allowDecay, String allowIgnore, String repeatable) {
-        return CM.grant_template.create.raws.cmd.create(name,
-                allowedRecipients,
-                days + "",
-                overdrawPercent <= 0 ? null : overdrawPercent + "",
-                econRole,
-                selfRole,
-                bracket,
-                useReceiverBracket,
-                maxTotal,
-                maxDay,
-                maxGranterDay,
-                maxGranterTotal, allowExpire, allowDecay, allowIgnore,
-                isRepeatable() ? null : "true", null).toSlashCommand();
+        return CM.grant_template.create.raws.cmd.name(name).allowedRecipients(
+                allowedRecipients).days(
+                days + "").overdrawPercent(
+                overdrawPercent <= 0 ? null : overdrawPercent + "").econRole(
+                econRole).selfRole(
+                selfRole).bracket(
+                bracket).useReceiverBracket(
+                useReceiverBracket).maxTotal(
+                maxTotal).maxDay(
+                maxDay).maxGranterDay(
+                maxGranterDay).maxGranterTotal(
+                maxGranterTotal).expireTime(
+                allowExpire).decayTime(
+                allowDecay).allowIgnore(
+                allowIgnore).repeatable_time(
+                getRepeatable() <= 0 ? null : TimeUtil.secToTime(TimeUnit.MILLISECONDS, getRepeatable())).toString();
     }
 
     @Override
-    public List<Grant.Requirement> getDefaultRequirements(@Nullable DBNation sender, @Nullable DBNation receiver, Integer parsed) {
-        List<Grant.Requirement> list = super.getDefaultRequirements(sender, receiver, parsed);
-        list.addAll(getRequirements(sender, receiver, this, parsed));
+    public List<Grant.Requirement> getDefaultRequirements(GuildDB db, @Nullable DBNation sender, @Nullable DBNation receiver, Integer parsed, boolean confirm) {
+        List<Grant.Requirement> list = super.getDefaultRequirements(db, sender, receiver, parsed, confirm);
+        list.addAll(getRequirements(db, sender, receiver, this, parsed));
         return list;
     }
 
-    public static List<Grant.Requirement> getRequirements(DBNation sender, DBNation receiver, RawsTemplate template, Integer parsed) {
+    public static List<Grant.Requirement> getRequirements(GuildDB db, DBNation sender, DBNation receiver, RawsTemplate template, Integer parsed) {
         List<Grant.Requirement> list = new ArrayList<>();
         list.add(new Grant.Requirement("Days granted must NOT exceed: " + (template == null ? "`{days}`" : template.days), false, new Function<DBNation, Boolean>() {
             @Override
@@ -128,7 +131,7 @@ public class RawsTemplate extends AGrantTemplate<Integer>{
         Map<ResourceType, Double> stockpile = receiver.getStockpile();
         Map<ResourceType, Double> needed = receiver.getResourcesNeeded(stockpile, parsed, false);
 
-        for (Transaction2 record : receiver.getTransactions(true)) {
+        for (Transaction2 record : receiver.getTransactions(-1, true)) {
             if(record.tx_datetime > cutoff && record.note != null && record.sender_id == receiver.getId()) {
                 Map<String, String> notes = PW.parseTransferHashNotes(record.note);
                 if (notes.containsKey("#raws") || notes.containsKey("#tax")) {

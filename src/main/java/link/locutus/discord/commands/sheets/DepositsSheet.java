@@ -3,9 +3,11 @@ package link.locutus.discord.commands.sheets;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.PWBindings;
 import link.locutus.discord.commands.manager.v2.impl.pw.commands.BankCommands;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBNation;
@@ -24,6 +26,11 @@ import static link.locutus.discord.apiv1.enums.ResourceType.resourcesToString;
 public class DepositsSheet extends Command {
     public DepositsSheet() {
         super("DepositsSheet", "DepositSheet", CommandCategory.ECON, CommandCategory.GAME_INFO_AND_TOOLS, CommandCategory.GOV);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.deposits.sheet.cmd);
     }
 
     @Override
@@ -70,20 +77,31 @@ public class DepositsSheet extends Command {
             }
         }
 
+        boolean ignoreTaxBase = flags.contains('b');
+        boolean ignoreOffset = flags.contains('o');
+        boolean noLoans = flags.contains('l');
+        boolean noGrants = flags.contains('g');
+        boolean noTaxes = flags.contains('t');
+        boolean noDeposits = flags.contains('d');
+        Set<Integer> includePastDepositors = flags.contains('p') ? db.getAllianceIds() : null;
+        boolean noEscrowSheet = flags.contains('e');
+
         return BankCommands.depositSheet(
                 channel,
                 guild,
                 db,
                 nations,
                 tracked == null ? null : new ArrayList<>(tracked).stream().map(f -> DBAlliance.getOrCreate(f.intValue())).collect(Collectors.toSet()),
-                flags.contains('f'),
-                flags.contains('o'),
-                flags.contains('t'),
-                flags.contains('l'),
-                flags.contains('g'),
-                flags.contains('d'),
-                flags.contains('p') ? db.getAllianceIds() : null,
-                flags.contains('e'),
+                ignoreTaxBase,
+                ignoreOffset,
+                false,
+                false,
+                noTaxes,
+                noLoans,
+                noGrants,
+                noDeposits,
+                includePastDepositors,
+                noEscrowSheet,
                 noteFlow == null ? null : PWBindings.DepositType(noteFlow),
                 flags.contains('f')
         );
@@ -111,12 +129,7 @@ public class DepositsSheet extends Command {
 //
 //        sheet.setHeader(header);
 //
-//        boolean useTaxBase = !flags.contains('b');
-//        boolean useOffset = !flags.contains('o');
-//        boolean noLoans = flags.contains('l');
-//        boolean noGrants = flags.contains('g');
-//        boolean noTaxes = flags.contains('t');
-//        boolean noDeposits = flags.contains('d');
+
 //
 //        double[] aaTotalPositive = ResourceType.getBuffer();
 //        double[] aaTotalNet = ResourceType.getBuffer();

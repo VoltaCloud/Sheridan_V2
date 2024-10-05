@@ -3,6 +3,7 @@ package link.locutus.discord.commands.account;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.commands.AdminCommands;
@@ -34,6 +35,11 @@ public class RoleAlias extends Command {
     }
 
     @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.role.setAlias.cmd);
+    }
+
+    @Override
     public String desc() {
         return "Map a Locutus role to a discord role. Valid roles are: " + Roles.getValidRolesStringList();
     }
@@ -60,6 +66,6 @@ public class RoleAlias extends Command {
             }
         }
         DBAlliance alliance = args.size() > 2 ? DBAlliance.parse(args.get(2), true) : null;
-        return AdminCommands.aliasRole(user, server, db, locutusRole, role, alliance, removeRole);
+        return AdminCommands.aliasRole(db, locutusRole, role, alliance, removeRole);
     }
 }

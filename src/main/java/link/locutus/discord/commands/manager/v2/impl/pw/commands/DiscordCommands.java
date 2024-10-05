@@ -125,17 +125,12 @@ public class DiscordCommands {
 
     @Command(desc = "Have the bot say the provided message, with placeholders replaced.")
     @NoFormat
-    public String say(NationPlaceholders placeholders, ValueStore store, @Me GuildDB db, @Me Guild guild, @Me IMessageIO channel, @Me User author, @Me DBNation me, @TextArea String msg) {
+    public String say(NationPlaceholders placeholders, ValueStore store, @Me User author, @Me DBNation me, @TextArea String msg) {
         msg = DiscordUtil.trimContent(msg);
         msg = msg.replace("@", "@\u200B");
         msg = msg.replace("&", "&\u200B");
 
-        PWGPTHandler gpt = Locutus.imp().getCommandManager().getV2().getPwgptHandler();
-        if (gpt != null) {
-            GptHandler handler = gpt.getHandler();
-            List<ModerationResult> result = handler.getModerator().moderate(msg);
-            GPTUtil.checkThrowModeration(result, "<redacted>");
-        }
+        GPTUtil.checkThrowModeration(msg);
 
         msg = msg + "\n\n- " + author.getAsMention();
 
@@ -200,7 +195,6 @@ public class DiscordCommands {
             }
             body = body.replace("\\n", "\n");
 
-            System.out.println("Commands: " + commands.size());
             IMessageBuilder msg = channel.create().embed(title, body);
             for (int i = 0; i < commands.size(); i++) {
                 String cmd = commands.get(i);
@@ -217,7 +211,7 @@ public class DiscordCommands {
 
     @Command(desc = "Create a channel with name in a specified category and ping the specified roles upon creation.")
     @NoFormat
-    public String channel(NationPlaceholders placeholders, ValueStore store, @Me GuildDB db, @Me JSONObject command, @Me User author, @Me Guild guild, @Me IMessageIO output, @Me DBNation nation,
+    public String channel(NationPlaceholders placeholders, ValueStore store, @Me GuildDB db, @Me User author, @Me Guild guild, @Me IMessageIO output, @Me DBNation nation,
                           String channelName, Category category, @Default String copypasta,
                           @Switch("i") boolean addInternalAffairsRole,
                           @Switch("m") boolean addMilcom,
@@ -227,6 +221,9 @@ public class DiscordCommands {
                           @Switch("a") boolean pingAuthor
 
     ) throws ExecutionException, InterruptedException {
+        if (category.getGuild().getIdLong() != db.getGuild().getIdLong()) {
+            throw new IllegalArgumentException("Category is not in the same guild as the command.");
+        }
         channelName = placeholders.format2(store, channelName, nation, true);
 
         Member member = guild.getMember(author);
@@ -325,7 +322,7 @@ public class DiscordCommands {
         Map<String, List<DiscordUtil.CommandInfo>> commandMap = DiscordUtil.getCommands(embedMessage.isFromGuild() ? embedMessage.getGuild() : null, embed, embedMessage.getButtons(), embedMessage.getJumpUrl(), true);
         List<String> commands = new ArrayList<>();
 
-        commands.add(CM.embed.create.cmd.create(title, desc).toSlashCommand(false));
+        commands.add(CM.embed.create.cmd.title(title).description(desc).toSlashCommand(false));
 
         String url = copyToMessage == null ? "" : copyToMessage.getJumpUrl();
 
@@ -345,7 +342,7 @@ public class DiscordCommands {
             String label = entry.getKey();
 
             String behaviorStr = (behavior == null ? CommandBehavior.DELETE_MESSAGE : behavior).name();
-            String cmdStr = CM.embed.add.raw.cmd.create(url, label, behaviorStr, StringMan.join(current, "\n"), channelId == null ? null : channelId.toString(), null).toSlashCommand(false);
+            String cmdStr = CM.embed.add.raw.cmd.message(url).label(label).behavior(behaviorStr).command(StringMan.join(current, "\n")).channel(channelId == null ? null : channelId.toString()).toSlashCommand(false);
             commands.add(cmdStr);
         }
 
@@ -402,7 +399,8 @@ public class DiscordCommands {
 
     @Command(desc = "Return the discord invite link for the bot")
     public String invite() {
-        return "<https://github.com/xdnw/locutus/wiki/banking>";
+        return "<https://discord.com/api/oauth2/authorize?client_id=" + Settings.INSTANCE.APPLICATION_ID + "&permissions=395606879321&scope=bot>\n" +
+                "<https://github.com/xdnw/locutus/wiki>";
     }
 
     @Command(desc = "Unregister a nation to a discord user")
@@ -436,7 +434,7 @@ public class DiscordCommands {
                 "2. Scroll down to where it says Discord Username:\n" +
                 "3. Put your discord username `" + fullDiscriminator + "` in the field\n" +
                 "4. Click save\n" +
-                "5. Run the command " + CM.register.cmd.create(nation.getNation_id() + "").toSlashCommand() + " again";
+                "5. Run the command " + CM.register.cmd.nation(nation.getNation_id() + "").toSlashCommand() + " again";
 
         long id = user.getIdLong();
         boolean checkId = false;
@@ -455,7 +453,7 @@ public class DiscordCommands {
                 "2. Scroll down to where it says Discord Username:\n" +
                 "3. Put your **DISCORD ID** `" + user.getIdLong() + "` in the field\n" +
                 "4. Click save\n" +
-                "5. Run the command " + CM.register.cmd.create(nation.getNation_id() + "").toSlashCommand() + " again";
+                "5. Run the command " + CM.register.cmd.nation(nation.getNation_id() + "").toSlashCommand() + " again";
 
         if (existingUser != null && existingUser.getNationId() != nation.getNation_id()) {
             if (existingUser.getDiscordId() != id) {
@@ -568,7 +566,7 @@ public class DiscordCommands {
 
     @Command(desc = "Set the category for a discord channel")
     @RolePermission(value = Roles.INTERNAL_AFFAIRS)
-    public String channelCategory(@Me Guild guild, @Me Member member, @Me TextChannel channel, Category category) {
+    public String channelCategory(@Me Member member, @Me TextChannel channel, Category category) {
         if (channel.getParentCategory() != null && channel.getParentCategory().getIdLong() == category.getIdLong()) {
             return "Channel is already in category: " + category;
         }

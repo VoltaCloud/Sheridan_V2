@@ -7,8 +7,10 @@ import link.locutus.discord.apiv1.enums.city.JavaCity;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBNation;
@@ -32,6 +34,10 @@ public class AssignBuild extends Command {
         super("AssignBuild", "build", CommandCategory.ECON, CommandCategory.MEMBER);
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.build.assign.cmd);
+    }
     public static String build(@Me IMessageIO io, GuildDB db, DBNation me, int cities, String arg) throws InterruptedException, ExecutionException, IOException {
         JavaCity to = null;
 
@@ -61,7 +67,7 @@ public class AssignBuild extends Command {
 
         double[] totalArr = new double[ResourceType.values.length];
         Map<Integer, JavaCity> from = me.getCityMap(true);
-        String instructions = to.instructions(from, totalArr);
+        String instructions = to.instructions(from, totalArr, true, true);
         String emoji = "Grant";
         String command = Settings.commandPrefix(true) + "grant {usermention} " + to.toJson();
         io.create().embed("Build", instructions).commandButton(command, emoji).send();

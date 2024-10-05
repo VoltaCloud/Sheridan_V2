@@ -3,9 +3,11 @@ package link.locutus.discord.commands.external.guild;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
-import link.locutus.discord.commands.war.WarCategory;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBNation;
@@ -18,7 +20,6 @@ import net.dv8tion.jda.api.entities.channel.attribute.ICategorizableChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 
 import java.util.List;
 import java.util.Set;
@@ -28,6 +29,10 @@ public class WarCat extends Command {
         super(CommandCategory.MILCOM, CommandCategory.MEMBER);
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.war.room.setCategory.cmd);
+    }
     @Override
     public boolean checkPermission(Guild server, User user) {
         return Roles.MILCOM.has(user, server);

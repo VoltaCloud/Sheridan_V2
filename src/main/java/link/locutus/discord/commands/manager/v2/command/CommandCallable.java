@@ -1,5 +1,6 @@
 package link.locutus.discord.commands.manager.v2.command;
 
+import com.google.gson.JsonObject;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
 import link.locutus.discord.commands.manager.v2.binding.WebStore;
 import link.locutus.discord.commands.manager.v2.perm.PermissionHandler;
@@ -35,6 +36,8 @@ public interface CommandCallable {
 
     List<String> aliases();
 
+    JsonObject toJson(PermissionHandler permHandler, boolean includeReturnType);
+
     default void validatePermissions(ValueStore store, PermissionHandler permisser) throws IllegalArgumentException {
 
     }
@@ -63,7 +66,6 @@ public interface CommandCallable {
             remainder.append(fullCommand);
             return this;
         }
-        String original = fullCommand;
         CommandGroup root = (CommandGroup) this;
         while (!fullCommand.isEmpty()) {
             String rootRemaining = fullCommand;
@@ -85,7 +87,7 @@ public interface CommandCallable {
                 return subCommand;
             }
         }
-        return this;
+        return root;
     }
 
     default CommandCallable getCallable(List<String> args, boolean allowRemainder) {
@@ -181,9 +183,6 @@ public interface CommandCallable {
         } else if (this instanceof ParametricCallable callable) {
             Method method = callable.getMethod();
             List<String> params = callable.getUserParameterMap().values().stream().map(ParameterData::getName).toList();
-            // join with comma
-            String typeArgs = params.stream().map(f -> "String " + f).collect(Collectors.joining(", "));
-            String args = params.stream().map(f -> "\"" + f + "\", " + f).collect(Collectors.joining(", "));
 
             Class<?> clazz = method.getDeclaringClass();
             String className = clazz.getName();
@@ -211,16 +210,23 @@ public interface CommandCallable {
                 }
             }
 
+            List<String> argMethods = new ArrayList<>();
+            for (String arg : params) {
+                argMethods.add(String.format("""
+                        %1$spublic %2$s %3$s(String value) {
+                        %1$s    return set("%3$s", value);
+                        %1$s}
+                        """, indentStr, name, arg));
+            }
+
             output.append(String.format("""
-                            %1$s@AutoRegister(clazz=%2$s.class,method="%3$s"%7$s)
+                            %1$s@AutoRegister(clazz=%2$s.class,method="%3$s"%5$s)
                             %1$spublic static class %4$s extends CommandRef {
                             %1$s    public static final %4$s cmd = new %4$s();
-                            %1$s    public %4$s create(%5$s) {
-                            %1$s        return createArgs(%6$s);
-                            %1$s    }
+                            %6$s
                             %1$s}
                             """,
-                    indentStr, className, method.getName(), name, typeArgs, args, fieldExt));
+                    indentStr, className, method.getName(), name, fieldExt, String.join("\n", argMethods)));
         } else {
             throw new IllegalArgumentException("Unknown callable type: " + this.getClass().getSimpleName());
         }

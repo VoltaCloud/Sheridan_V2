@@ -258,9 +258,23 @@ public class ImageUtil {
         }
         File fileAbs = fileTmp.getAbsoluteFile();
         String result = ocr.discernAndAutoCleanImage(fileAbs, type);
-        result = result.replace("|", "I");
+        result = fixEncodingIssues(result.replace("|", "I"));
         fileTmp.delete();
         return result;
+    }
+
+    private static String fixEncodingIssues(String text) {
+        return text.replaceAll("\u00e2\u20ac\u2122", "\u2019")
+                .replaceAll("\u00e2\u20ac\u0153", "\u201C")
+                .replaceAll("\u00e2\u20ac\u017d", "\u201D")
+                .replaceAll("\u00e2\u20ac\u201c", "\u2013")
+                .replaceAll("\u00e2\u20ac\u201d", "\u2014")
+                .replaceAll("\u00e2\u20ac\u02dc", "\u2018")
+                .replaceAll("\u00e2\u20ac\u00a2", "\u2022")
+                .replaceAll("\u00e2\u20ac\u00a6", "\u2026")
+                .replaceAll("\u00e2\u20ac", "\u2020")
+                .replaceAll("\u00e2\u201e\u00a2", "\u2122")
+                .replaceAll("\u00c2", "");
     }
 
     public static File downloadImageWithSizeLimit(String imageUrl, long maxSizeBytes) throws IOException {
@@ -427,7 +441,6 @@ public class ImageUtil {
 
         String url = endpoint + imageUrl;
         String jsonStr = FileUtil.readStringFromURL(PagePriority.API_OCR, url);
-        System.out.println(jsonStr);
         JSONObject json = new JSONObject(jsonStr);
         // ParsedResults > ParsedText
         String parsedText = null;
@@ -504,7 +517,6 @@ public class ImageUtil {
             int lineHeight = g2d.getFontMetrics().getAscent();
             int padding = g2d.getFontMetrics().getHeight() - g2d.getFontMetrics().getAscent();
             int totalTextHeight = lines.size() * lineHeight;
-            System.out.println("Line " + lineHeight + " | " + padding);
             int y = (repeat ? 0 : (image.getHeight() - totalTextHeight) / 2) - padding;
             while (y < image.getHeight()) {
                 for (String line : lines) {

@@ -4,13 +4,15 @@ import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.core.ApiKeyPool;
 import link.locutus.discord.apiv1.enums.DepositType;
 import link.locutus.discord.apiv1.enums.city.building.Building;
+import link.locutus.discord.commands.manager.v2.command.CommandBehavior;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.NationPlaceholders;
-import link.locutus.discord.commands.war.WarCategory;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.entities.*;
@@ -82,6 +84,7 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import static link.locutus.discord.pnw.BeigeReason.BEIGE_CYCLE;
 
@@ -174,7 +177,7 @@ public class GuildHandler {
 
         AllianceList allianceList = db.getAllianceList();
 
-        Map<Integer, TaxBracket> brackets = allianceList.getTaxBrackets(false);
+        Map<Integer, TaxBracket> brackets = allianceList.getTaxBrackets(TimeUnit.MINUTES.toMillis(5));
         Map<DBNation, TaxBracket> bracketsByNation = new HashMap<>();
 
         Map<DBNation, Map.Entry<TaxBracket, String>> nationsMovedBracket = new HashMap<>();
@@ -243,6 +246,8 @@ public class GuildHandler {
         return nationsMovedRate;
     }
 
+    private Map<Long, Long> usersWithAppRole = new ConcurrentHashMap<>();
+
     public void onGuildMemberRoleAdd(GuildMemberRoleAddEvent event) {
         Guild guild = event.getGuild();
         GuildDB db = Locutus.imp().getGuildDB(guild);
@@ -253,8 +258,13 @@ public class GuildHandler {
         List<Role> roles = event.getRoles();
         Role appRole = Roles.APPLICANT.toRole(guild);
         if (!roles.contains(appRole)) return;
+        User user = event.getUser();
+        Long last = usersWithAppRole.get(user.getIdLong());
+        long now = System.currentTimeMillis();
+        if (last != null && now - last < TimeUnit.MINUTES.toMillis(5)) return;
+        usersWithAppRole.put(user.getIdLong(), now);
 
-        newApplicantOnDiscord(event.getUser());
+        newApplicantOnDiscord(user);
     }
 
     public void newApplicantOnDiscord(User author) {
@@ -313,12 +323,12 @@ public class GuildHandler {
 
         body.append("The first on the trigger, react with the " + emoji + " emoji");
 
-        String pending = "_" + Settings.commandPrefix(true) + "UpdateEmbed 'description:{description}\n" +
-                "\n" +
-                "Assigned to {usermention} in {timediff}'\n" +
-                CM.interview.create.cmd.create(author.getAsMention()).toCommandArgs();
+        List<CommandRef> cmds = List.of(
+                CM.embed.update.cmd.desc("{description}\nAssigned to {usermention} in {timediff}"),
+                CM.interview.create.cmd.user(author.getAsMention()));
+        String cmdStr = cmds.stream().map(f -> f.toCommandArgs()).collect(Collectors.joining("\n"));
 
-        IMessageBuilder msg = new DiscordChannelIO(alertChannel).create().embed(title, body.toString()).commandButton(pending, emoji);
+        IMessageBuilder msg = new DiscordChannelIO(alertChannel).create().embed(title, body.toString()).commandButton(CommandBehavior.DELETE_BUTTONS, cmdStr, emoji);
         if (mentionInterviewer) {
             msg.append("^ " + interviewerRole.getAsMention());
         }
@@ -591,6 +601,7 @@ public class GuildHandler {
         if (user != null) {
             body.append("\nUser: " + user.getAsMention());
         }
+        body.append("\nSee: " + CM.channel.memberChannels.cmd.toSlashMention());
 
         DiscordChannelIO io = new DiscordChannelIO(channel);
 
@@ -604,12 +615,11 @@ public class GuildHandler {
                 e.printStackTrace();
             }
             String emoji = "Claim";
-            String pending = "_" + Settings.commandPrefix(true) + "UpdateEmbed 'description:{description}\n" +
-                    "\n" +
-                    "Assigned to {usermention} in {timediff}'";
+            CM.embed.update cmd = CM.embed.update.cmd.desc("{description}\nAssigned to {usermention} in {timediff}");
+
 
             io.create().embed(title, body.toString())
-                    .commandButton(pending, emoji).send();
+                    .commandButton(CommandBehavior.DELETE_BUTTONS, cmd, emoji).send();
         } else {
             RateLimitUtil.queueMessage(io, new Function<IMessageBuilder, Boolean>() {
                 @Override
@@ -664,7 +674,7 @@ public class GuildHandler {
         String subject = pair.getKey();
         String message = pair.getValue();
         ApiKeyPool keys = getDb().getMailKey();
-        if (keys == null) {
+        if (keys == null || keys.size() == 0) {
             boolean hasKey = getDb().getOrNull(GuildKey.API_KEY) != null;
             if (!hasKey) {
                 throw new IllegalArgumentException("Please set `API_KEY` with " + CM.settings.info.cmd.toSlashMention());
@@ -1460,15 +1470,13 @@ public class GuildHandler {
         AttackTypeBreakdown breakdown = parser.toBreakdown();
 
         String infoEmoji = "War Info";
-        String infoCommand = "." + Settings.commandPrefix(true) + "warinfo " + war.toUrl();
+        CommandRef infoCommand = CM.war.card.cmd.warId(war.warId + "");
 
         String costEmoji = "War Cost";
-        String costCommand = "." + Settings.commandPrefix(true) + "WarCost " + war.toUrl();
+        CommandRef costCommand = CM.stats_war.warCost.cmd.war(war.warId + "");
 
         String assignEmoji = "Claim";
-        String assignCmd = "." + Settings.commandPrefix(true) + "UpdateEmbed 'description:{description}\n" +
-                "\n" +
-                "Assigned to {usermention} in {timediff}'";
+        CommandRef assignCmd = CM.embed.update.cmd.desc("{description}\nAssigned to {usermention} in {timediff}");
 
         DiscordChannelIO io = new DiscordChannelIO(channel);
         IMessageBuilder msg = io.create();
@@ -1478,21 +1486,21 @@ public class GuildHandler {
 
         builder.append(enemy.getNationUrlMarkup(true))
                 .append(" | ").append(enemy.getAllianceUrlMarkup(true)).append(":");
-        builder.append(enemy.toCityMilMarkedown());
+        builder.append(enemy.toCityMilMarkdown());
 
         String typeStr = isAttacker ? "\uD83D\uDD2A" : "\uD83D\uDEE1";
         builder.append(typeStr);
         builder.append(memberNation.getNationUrlMarkup(true) + " (member):");
-        builder.append("\n").append(memberNation.toCityMilMarkedown());
+        builder.append("\n").append(memberNation.toCityMilMarkdown());
 
         String attStr = card.condensedSubInfo(isAttacker);
         String defStr = card.condensedSubInfo(!isAttacker);
         builder.append("```\n" + attStr + "|" + defStr + "```\n");
 
         msg.writeTable(title, breakdown.toTableList(), false, builder.toString());
-        msg.commandButton(infoCommand, infoEmoji);
-        msg.commandButton(costCommand, costEmoji);
-        msg.commandButton(assignCmd, assignEmoji);
+        msg.commandButton(CommandBehavior.DELETE_PRESSED_BUTTON, infoCommand, infoEmoji);
+        msg.commandButton(CommandBehavior.DELETE_PRESSED_BUTTON, costCommand, costEmoji);
+        msg.commandButton(CommandBehavior.DELETE_PRESSED_BUTTON, assignCmd, assignEmoji);
         msg.cancelButton();
         msg.send();
     }
@@ -1597,10 +1605,6 @@ public class GuildHandler {
                 if (defender != null) {
                     boolean pingMilcom = defender.getPosition() >= Rank.MEMBER.id || defender.active_m() < 2440 || (aaIds.contains(defender.getAlliance_id()) && defender.active_m() < 7200);
                     if (pingMilcom && milcomRole != null) {
-                        CounterStat counterStat = war.getCounterStat();
-                        if (counterStat != null && counterStat.type == CounterType.IS_COUNTER && !enemies.contains(attacker.getAlliance_id())) {
-                            pingMilcom = false;
-                        }
                         if (pingMilcom && attacker != null && enemies.contains(attacker.getAlliance_id()) && attacker.getDef() >= 3) {
                             pingMilcom = false;
                         }
@@ -1609,6 +1613,13 @@ public class GuildHandler {
                             if (allowedMentions != null) {
                                 if (!allowedMentions.test(attacker) && !allowedMentions.test(defender)) {
                                     pingMilcom = false;
+                                }
+                            }
+                            if (pingMilcom && GuildKey.MENTION_MILCOM_COUNTERS.getOrNull(db) != Boolean.TRUE) {
+                                CounterStat counterStat = war.getCounterStat();
+                                if (counterStat != null && counterStat.type == CounterType.IS_COUNTER && !enemies.contains(attacker.getAlliance_id())) {
+                                    pingMilcom = false;
+                                    pingUserOrRoles.computeIfAbsent(war, f -> new HashSet<>()).add("No `" + Roles.MILCOM.name() + "` ping as `" + GuildKey.MENTION_MILCOM_COUNTERS.name() + "` is NOT `true`." );
                                 }
                             }
                         }
@@ -1850,22 +1861,21 @@ public class GuildHandler {
                                         tips.add("Deposit your excess money in the bank or it will be stolen: " + bankUrl + " (only $" + MathMan.format(unraidable) + " is unraidable)");
                                     }
                                     if (faRole != null) {
-                                        tips.add("Please ping @\u200B" + faRole.getName() + " to get help negotiating peace");
+                                        String enemyStr = "(Or mark as enemy " +
+                                                CM.coalition.create.cmd.alliances(attacker.getAlliance_id() + "").coalitionName(Coalition.ENEMIES.name()) + ")";
+                                        tips.add("Please ping @\u200B" + faRole.getName() + " to get help negotiating peace. " + (attacker.getAlliance_id() == 0 ? "" : enemyStr));
                                     }
                                     if (milcomRole != null) {
                                         tips.add("Please ping @\u200B" + milcomRole.getName() + " to get military advice");
                                     }
                                 }
-                                Map<Integer, JavaCity> defCities = defender.getCityMap(false, false);
-                                if (attacker.getSoldiers() > defender.getSoldiers()) {
-                                    for (JavaCity value : defCities.values()) {
-                                        if (value.getBuilding(Buildings.BARRACKS) != 5) {
-                                            tips.add("Buy max barracks and soldiers (you may need to sell off some mines)");
-                                            break;
-                                        }
-                                    }
+                                if (defender.getMMRBuildingArr()[0] <= 4) {
+                                    tips.add("Buy max barracks and soldiers (you may need to sell off some mines)");
+                                } else if (defender.getSoldierPct() < 0.8) {
+                                    tips.add("Buy more soldiers to help defend yourself");
                                 }
                                 if (attacker.getShips() > 0 && defender.getShips() == 0 && defender.getAvg_infra() >= 1450 && defender.getAircraft() > attacker.getAircraft()) {
+                                    Map<Integer, JavaCity> defCities = defender.getCityMap(false, false,false);
                                     boolean hasDock = false;
                                     for (JavaCity value : defCities.values()) {
                                         if (value.getBuilding(Buildings.DRYDOCK) != 0) {
@@ -2187,18 +2197,20 @@ public class GuildHandler {
         body.append("\n\nPress 0 for war info, 1 for defender info");
 
         //
-        String warInfoEmoji = 0 + "War Info";
-        String warInfoCmd = "~" + Settings.commandPrefix(true) + "warinfo " + root.getWar_id();
-        String defInfoEmoji = 1 + "Defender Info";
-        String defInfoCmd = "~" + Settings.commandPrefix(true) + "warinfo " + defender.getUrl();
+        String warInfoEmoji = "War Info";
+        CommandRef warInfoCmd = CM.war.card.cmd.warId(root.getWar_id() + "");
+        String defInfoEmoji = "Defender Info";
+        CommandRef defInfoCmd = CM.war.info.cmd.nation(defender.getNation_id() + "");
 
         String emoji = "Claim";
-        String pending = "_" + Settings.commandPrefix(true) + "UpdateEmbed 'description:{description}\n" +
-                "\n" +
-                "Assigned to {usermention} in {timediff}'";
+        CommandRef pending = CM.embed.update.cmd.desc("{description}\nAssigned to {usermention} in {timediff}");
         body.append("\nPress `" + emoji + "` to assign yourself");
 
-        DiscordUtil.createEmbedCommand(channel, title, body.toString(), warInfoEmoji, warInfoCmd, defInfoEmoji, defInfoCmd, emoji, pending);
+        IMessageBuilder msg = new DiscordChannelIO(channel).create();
+        msg.embed(title, body.toString())
+        .commandButton(CommandBehavior.UNPRESS, warInfoCmd, warInfoEmoji)
+        .commandButton(CommandBehavior.UNPRESS, defInfoCmd, defInfoEmoji)
+        .commandButton(CommandBehavior.UNPRESS, pending, emoji);
 
         Role milcom = Roles.ENEMY_BEIGE_ALERT_AUDITOR.toRole(db.getGuild());
         if (!allowed) {
@@ -2212,8 +2224,8 @@ public class GuildHandler {
             explanation += "\n\nSent from " + guild.toString();
 
             if (!ping.isEmpty()) {
-                RateLimitUtil.queueWhenFree(channel.sendMessage("^" + ping));
-                DiscordUtil.sendMessage(channel, explanation.toString());
+                msg.append(ping);
+                msg.append(explanation);
             }
 
             if (sendMail) {
@@ -2230,6 +2242,7 @@ public class GuildHandler {
                 }
             }
         }
+        msg.send();
 
 //            if (!allowed) {
 //                User user = attacker.getUser();
@@ -2456,7 +2469,7 @@ public class GuildHandler {
                     }
                     if (membersWithRoles.isEmpty()) {
                         try {
-                            RateLimitUtil.queueWhenFree(output.sendMessage("Please set " + CM.role.setAlias.cmd.create(Roles.INTERNAL_AFFAIRS.name(), null, null, null) + " and assign it to an active gov member\n" +
+                            RateLimitUtil.queueWhenFree(output.sendMessage("Please set " + CM.role.setAlias.cmd.locutusRole(Roles.INTERNAL_AFFAIRS.name()).discordRole(null) + " and assign it to an active gov member\n" +
                                     "- Disabling `" + GuildKey.RECRUIT_MESSAGE_OUTPUT.name() + "`: enable with " + GuildKey.RECRUIT_MESSAGE_OUTPUT.getCommandMention()));
                             db.deleteInfo(GuildKey.RECRUIT_MESSAGE_OUTPUT);
                         } catch (Throwable e) {
@@ -2683,7 +2696,7 @@ public class GuildHandler {
 
                     IMessageIO io = new DiscordChannelIO(channel);
                     IMessageBuilder msg = io.create().embed(title, body);
-                    msg = msg.commandButton(CM.escrow.withdraw.cmd.create(receiver.getQualifiedId(), ResourceType.resourcesToString(escrowed), "true"), "send");
+                    msg = msg.commandButton(CM.escrow.withdraw.cmd.receiver(receiver.getQualifiedId()).amount(ResourceType.resourcesToString(escrowed)).force("true"), "send");
                     if (!mentions.isEmpty()) {
                         msg = msg.append(StringMan.join(mentions, ", "));
                     }
@@ -2729,8 +2742,6 @@ public class GuildHandler {
                 " | " + PW.getMarkdownUrl(current.getAttacker_aa(), true)).append("\n");
         body.append("DEF: " + PW.getMarkdownUrl(current.getDefender_id(), false) +
                 " | " + PW.getMarkdownUrl(current.getDefender_aa(), true)).append("\n");
-
-        System.out.println("Create peace alert");
         DiscordUtil.createEmbedCommand(channel, title, body.toString());
     }
 }

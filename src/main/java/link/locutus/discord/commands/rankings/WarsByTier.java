@@ -2,11 +2,13 @@ package link.locutus.discord.commands.rankings;
 
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
-import link.locutus.discord.commands.rankings.table.TableNumberFormat;
-import link.locutus.discord.commands.rankings.table.TimeDualNumericTable;
-import link.locutus.discord.commands.rankings.table.TimeFormat;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.commands.manager.v2.table.TableNumberFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeDualNumericTable;
+import link.locutus.discord.commands.manager.v2.table.TimeFormat;
 import link.locutus.discord.db.entities.DBWar;
 import link.locutus.discord.db.entities.WarParser;
 import link.locutus.discord.db.entities.DBNation;
@@ -24,6 +26,11 @@ import java.util.concurrent.TimeUnit;
 public class WarsByTier extends Command {
     public WarsByTier() {
         super(CommandCategory.GAME_INFO_AND_TOOLS, CommandCategory.MILCOM);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.stats_tier.attributeTierGraph.cmd.metric("getOff"));
     }
 
     @Override

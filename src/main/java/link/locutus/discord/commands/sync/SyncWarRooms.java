@@ -1,9 +1,11 @@
 package link.locutus.discord.commands.sync;
 
 import link.locutus.discord.Locutus;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
-import link.locutus.discord.commands.war.WarCategory;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.db.GuildDB;
@@ -17,7 +19,6 @@ import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 
 import java.util.HashSet;
 import java.util.Iterator;
@@ -28,6 +29,11 @@ import java.util.Set;
 public class SyncWarRooms extends Command {
     public SyncWarRooms() {
         super(CommandCategory.DEBUG, CommandCategory.LOCUTUS_ADMIN);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.admin.sync.warrooms.cmd);
     }
 
     @Override

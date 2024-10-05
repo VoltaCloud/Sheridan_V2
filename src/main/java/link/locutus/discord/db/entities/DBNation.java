@@ -1,6 +1,7 @@
 package link.locutus.discord.db.entities;
 
 import com.google.gson.JsonSyntaxException;
+import com.politicsandwar.graphql.model.ApiKeyDetails;
 import com.politicsandwar.graphql.model.Bankrec;
 import com.politicsandwar.graphql.model.Nation;
 import com.politicsandwar.graphql.model.Trade;
@@ -10,27 +11,22 @@ import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectArrayMap;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.apiv1.core.ApiKeyPool;
 import link.locutus.discord.apiv1.domains.subdomains.attack.v3.AbstractCursor;
 import link.locutus.discord.apiv1.enums.WarType;
 import link.locutus.discord.apiv1.enums.city.building.PowerBuilding;
 import link.locutus.discord.apiv3.PoliticsAndWarV3;
 import link.locutus.discord.apiv3.enums.AlliancePermission;
+import link.locutus.discord.apiv3.enums.ApiKeyPermission;
 import link.locutus.discord.apiv3.enums.GameTimers;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Arg;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
+import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Timestamp;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PlaceholderCache;
 import link.locutus.discord.commands.manager.v2.binding.bindings.ScopedPlaceholderCache;
 import link.locutus.discord.commands.manager.v2.binding.bindings.TypedFunction;
-import link.locutus.discord.commands.manager.v2.command.CommandBehavior;
-import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
-import link.locutus.discord.commands.manager.v2.command.IMessageIO;
-import link.locutus.discord.commands.manager.v2.command.StringMessageIO;
+import link.locutus.discord.commands.manager.v2.command.*;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePermission;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.WhitelistPermission;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
@@ -120,7 +116,7 @@ public class DBNation implements NationOrAlliance {
     private int alliance_id;
     private long last_active;
     private double score;
-    private int cities; // TODO remove
+    private int cities;
     private DomesticPolicy domestic_policy;
     private WarPolicy war_policy;
     private int soldiers;
@@ -158,25 +154,25 @@ public class DBNation implements NationOrAlliance {
 
     public void processTurnChange(long lastTurn, long turn, Consumer<Event> eventConsumer) {
         if (leaving_vm == turn) {
-            if (eventConsumer != null) new NationLeaveVacationEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationLeaveVacationEvent(this, this));
         }
         if (beigeTimer == turn) {
-            if (eventConsumer != null) new NationLeaveBeigeEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationLeaveBeigeEvent(this, this));
         }
         if (colorTimer == turn) {
-            if (eventConsumer != null) new NationColorTimerEndEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationColorTimerEndEvent(this, this));
         }
         if (warPolicyTimer == turn) {
-            if (eventConsumer != null) new NationWarPolicyTimerEndEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationWarPolicyTimerEndEvent(this, this));
         }
         if (domesticPolicyTimer == turn) {
-            if (eventConsumer != null) new NationDomesticPolicyTimerEndEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationDomesticPolicyTimerEndEvent(this, this));
         }
         if (cityTimer == turn) {
-            if (eventConsumer != null) new NationCityTimerEndEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationCityTimerEndEvent(this, this));
         }
         if (projectTimer == turn) {
-            if (eventConsumer != null) new NationProjectTimerEndEvent(this, this).post();
+            if (eventConsumer != null) eventConsumer.accept(new NationProjectTimerEndEvent(this, this));
         }
     }
 
@@ -365,7 +361,7 @@ public class DBNation implements NationOrAlliance {
         if (nation_id == Settings.INSTANCE.NATION_ID) {
             if (Settings.INSTANCE.ADMIN_USER_ID != user.getIdLong()) {
                 if (Settings.INSTANCE.ADMIN_USER_ID > 0) {
-                    throw new IllegalArgumentException("Invalid admin user id in `config.yaml`. Tried to register `" + user.getIdLong() + "` but config has is `" + Settings.INSTANCE.ADMIN_USER_ID + "`");
+                    throw new IllegalArgumentException("Invalid admin user id in `config.yaml`. Tried to register `" + user.getIdLong() + "` but config has `" + Settings.INSTANCE.ADMIN_USER_ID + "`");
                 }
                 Settings.INSTANCE.ADMIN_USER_ID = user.getIdLong();
                 Settings.INSTANCE.save(Settings.INSTANCE.getDefaultFile());
@@ -547,7 +543,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "If the nation has all of the specified projects")
-    public boolean hasProjects(Set<Project> projects, @Default boolean any) {
+    public boolean hasProjects(@NoFormat Set<Project> projects, @Default("false") boolean any) {
         if (any) {
             for (Project p : projects) {
                 if (hasProject(p)) {
@@ -644,7 +640,11 @@ public class DBNation implements NationOrAlliance {
                 lastLootDate = Math.max(lastLootDate, recent);
             }
         }
-        double cityCost = PW.City.nextCityCost(cities, true, hasProject(Projects.URBAN_PLANNING), hasProject(Projects.ADVANCED_URBAN_PLANNING), hasProject(Projects.METROPOLITAN_PLANNING), hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY));
+        double cityCost = PW.City.nextCityCost(cities, true, hasProject(Projects.URBAN_PLANNING),
+                hasProject(Projects.ADVANCED_URBAN_PLANNING),
+                hasProject(Projects.METROPOLITAN_PLANNING),
+                hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY),
+                hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
         double maxStockpile = cityCost * 2;
         double daysToMax = maxStockpile / (getInfra() * 300);
         if (lastLootDate == 0) {
@@ -692,7 +692,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Days since joining the alliance")
-    @RolePermission(Roles.MEMBER)
     public double allianceSeniority() {
         long result = allianceSeniorityMs();
         if (result == 0 || result == Long.MAX_VALUE) return result;
@@ -700,7 +699,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Days since joining the alliance")
-    @RolePermission(Roles.MEMBER)
         public double allianceSeniorityApplicant() {
         long result = allianceSeniorityApplicantMs();
         if (result == 0 || result == Long.MAX_VALUE) return result;
@@ -708,7 +706,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command
-    @RolePermission(Roles.MEMBER)
     public long allianceSeniorityNoneMs() {
         if (alliance_id != 0) return 0;
         long timestamp = Locutus.imp().getNationDB().getAllianceMemberSeniorityTimestamp(this, getSnapshot());
@@ -718,7 +715,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Milliseconds since joining the alliance")
-    @RolePermission(Roles.MEMBER)
     public long allianceSeniorityApplicantMs() {
         if (alliance_id == 0) return 0;
         long timestamp = Locutus.imp().getNationDB().getAllianceApplicantSeniorityTimestamp(this, getSnapshot());
@@ -728,7 +724,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Milliseconds since joining the alliance")
-    @RolePermission(Roles.MEMBER)
     public long allianceSeniorityMs() {
         if (alliance_id == 0) return 0;
         long timestamp = Locutus.imp().getNationDB().getAllianceMemberSeniorityTimestamp(this, getSnapshot());
@@ -863,6 +858,11 @@ public class DBNation implements NationOrAlliance {
         return getRelativeStrength(true);
     }
 
+    public double exponentialCityStrength(@Default Double power) {
+        if (power == null) power = 3d;
+        return Math.pow(getCities(), power);
+    }
+
     public double getRelativeStrength(boolean inactiveIsLoss) {
         if (active_m() > 2440 && inactiveIsLoss) return 0;
 
@@ -875,7 +875,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Set of projects this nation has")
-    @RolePermission(Roles.MEMBER)
     public Set<Project> getProjects() {
         if (this.projects == -1) return Collections.EMPTY_SET;
 
@@ -1030,7 +1029,7 @@ public class DBNation implements NationOrAlliance {
         if (this.auth != null) return auth;
         synchronized (this) {
             if (auth == null) {
-                if (this.nation_id == Settings.INSTANCE.NATION_ID) {
+                if (this.nation_id == Locutus.loader().getNationId()) {
                     if (!Settings.INSTANCE.USERNAME.isEmpty() && !Settings.INSTANCE.PASSWORD.isEmpty()) {
                         return auth = new Auth(nation_id, Settings.INSTANCE.USERNAME, Settings.INSTANCE.PASSWORD);
                     }
@@ -1401,7 +1400,7 @@ public class DBNation implements NationOrAlliance {
             }
         }
         if (nation.getSpies() != null) {
-            this.setSpies(nation.getSpies(), false);
+            this.setSpies(nation.getSpies(), eventConsumer);
             if (copyOriginal != null && copyOriginal.getSpies() != (nation.getSpies())) {
                 if (eventConsumer != null) eventConsumer.accept(new NationChangeUnitEvent(copyOriginal, this, MilitaryUnit.SPIES));
                 dirty = true;
@@ -1473,7 +1472,7 @@ public class DBNation implements NationOrAlliance {
                 this.setEspionageFull(!nation.getEspionage_available());
                 if (eventConsumer != null && this.getVm_turns() > 0) eventConsumer.accept(new NationChangeSpyFullEvent(copyOriginal, this));
             } else {
-                this.setEspionageFull(this.isEspionageFull());
+                this.setEspionageFull(!nation.getEspionage_available());
             }
         }
         // DC can be changed by unit changes
@@ -1734,15 +1733,13 @@ public class DBNation implements NationOrAlliance {
         return Math.max(spies, 0);
     }
 
-    public void setSpies(int spies, boolean events) {
+    public void setSpies(int spies, Consumer<Event> eventConsumer) {
         getCache().processUnitChange(this, MilitaryUnit.SPIES, this.spies, spies);
-        if (events && this.spies != spies) {
+        if (eventConsumer != null && this.spies != spies) {
             DBNation copyOriginal = new DBNation(this);
             this.spies = spies;
-
             Locutus.imp().getNationDB().saveNation(this);
-
-            new NationChangeUnitEvent(copyOriginal, this, MilitaryUnit.SPIES).post();
+            eventConsumer.accept(new NationChangeUnitEvent(copyOriginal, this, MilitaryUnit.SPIES));
         }
         this.spies = spies;
     }
@@ -1798,12 +1795,9 @@ public class DBNation implements NationOrAlliance {
         if (Settings.USE_V2) {
             Locutus.imp().runEventsAsync(events -> bankDb.updateBankRecs(nation_id, priority, events));
         } else if (Settings.INSTANCE.TASKS.BANK_RECORDS_INTERVAL_SECONDS > 0) {
-            System.out.println("Update bank recs 0");
             Locutus.imp().runEventsAsync(f -> bankDb.updateBankRecs(priority, f));
         } else {
-            System.out.println("Update bank recs 1");
             Locutus.imp().runEventsAsync(events -> bankDb.updateBankRecs(nation_id, priority, events));
-            System.out.println("Update bank recs 2");
         }
         return Locutus.imp().getBankDB().getTransactionsByNation(nation_id);
     }
@@ -1851,6 +1845,26 @@ public class DBNation implements NationOrAlliance {
             last = day;
         }
         return Long.MAX_VALUE;
+    }
+
+    @Command(desc = "Number of times since this nation's creation that they have been inactive for a specified number of days")
+    public int inactivity_streak(int daysInactive, long checkPastXDays) {
+        long turns = checkPastXDays * 12 + 11;
+        List<Long> logins = new ArrayList<>(Locutus.imp().getNationDB().getActivityByDay(nation_id, TimeUtil.getTurn(getSnapshot()) - turns));
+        Collections.reverse(logins);
+
+        int inactivityCount = 0;
+        long last = 0;
+
+        for (long day : logins) {
+            long diff = last - day;
+            if (diff > daysInactive) {
+                inactivityCount++;
+            }
+            last = day;
+        }
+
+        return inactivityCount;
     }
 
     @Command(desc = "Days since last bank deposit")
@@ -1902,8 +1916,6 @@ public class DBNation implements NationOrAlliance {
             }
         }
         if (update) {
-            System.out.println("Update transactions");
-            new Exception().printStackTrace();
             return updateTransactions(priority);
         }
         return Locutus.imp().getBankDB().getTransactionsByNation(nation_id);
@@ -1966,7 +1978,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     public static LoginFactorResult getLoginFactorPercents(DBNation nation) {
-        long start = System.currentTimeMillis();
         List<LoginFactor> factors = DBNation.getLoginFactors(nation);
 
         long turnNow = TimeUtil.getTurn();
@@ -1980,17 +1991,11 @@ public class DBNation implements NationOrAlliance {
 
         LoginFactorResult result = new LoginFactorResult();
         for (LoginFactor factor : factors) {
-            long start2 = System.currentTimeMillis();
             Predicate<DBNation> matches = f -> factor.matches(factor.get(nation), factor.get(f));
             BiFunction<Integer, Integer, Integer> sumFactor = inactiveByTurn.getSummedFunction(matches);
 
             int numCandidateActivity = sumFactor.apply(Math.min(maxTurn - 23, candidateTurnInactive), Math.min(maxTurn, candidateTurnInactive + 24));
             int numInactive = Math.max(1, sumFactor.apply(14 * 12, 30 * 12) / (30 - 14));
-
-            long diff = System.currentTimeMillis() - start2;
-            if (diff > 5) {
-                System.out.println("Diff " + factor.name + ": " + diff + "ms");
-            }
 
             double loginPct = Math.min(0.95, Math.max(0.05, numCandidateActivity > numInactive ? (1d - ((double) (numInactive) / (double) numCandidateActivity)) : 0)) * 100;
             result.put(factor, loginPct);
@@ -2431,7 +2436,7 @@ public class DBNation implements NationOrAlliance {
 
     @Command(desc = "Get nation deposits")
     @RolePermission(Roles.ECON)
-    public Map<ResourceType, Double> getDeposits(ValueStore store, @Me GuildDB db, @Default @Timestamp Long start, @Default @Timestamp Long end, @Default Predicate<Transaction2> filter,
+    public Map<ResourceType, Double> getDeposits(ValueStore store, @Me GuildDB db, @Default @Timestamp Long start, @Default @Timestamp Long end, @NoFormat @Default Predicate<Transaction2> filter,
                                                  @Arg("use 0/0 as the tax base\ni.e. All taxes included in deposits\n" +
                                                          "The default internal taxrate is 100/100 (all taxes excluded)") @Switch("b") boolean ignoreBaseTaxrate,
                                                  @Arg("Do NOT include any manual deposit offesets") @Switch("o") boolean ignoreOffsets,
@@ -2489,6 +2494,7 @@ public class DBNation implements NationOrAlliance {
         return false;
     }
 
+    @Deprecated // Not working any more since you cant do it with an api key, only login
     public String commend(boolean isCommend) throws IOException {
         ApiKeyPool.ApiKey key = getApiKey(true);
         String url = "https://politicsandwar.com/api/denouncements.php";
@@ -2499,7 +2505,7 @@ public class DBNation implements NationOrAlliance {
         } else {
             post.put("action", "denouncement");
         }
-        post.put("account_id", Settings.INSTANCE.NATION_ID + "");
+        post.put("account_id", Locutus.loader().getNationId() + "");
         post.put("target_id", getNation_id() + "");
         post.put("api_key", key.getKey());
         Locutus.imp().getRootAuth().readStringFromURL(PagePriority.COMMEND, url, post);
@@ -2692,27 +2698,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     public double estimateScore(MMRDouble mmr, Double infra, Integer projects, Integer cities) {
-        if (projects == null) projects = getNumProjects();
-        if (infra == null) infra = getInfra();
-        if (cities == null) cities = this.cities;
-
-        double base = 10;
-        base += projects * Projects.getScore();
-        base += (cities - 1) * 100;
-        base += infra / 40d;
-        for (MilitaryUnit unit : MilitaryUnit.values) {
-            if (unit == MilitaryUnit.INFRASTRUCTURE) continue;
-            int amt;
-            if (mmr != null && unit.getBuilding() != null) {
-                amt = (int) (mmr.getPercent(unit) * unit.getBuilding().getUnitCap() * unit.getBuilding().cap(f -> false) * cities);
-            } else {
-                amt = getUnits(unit);
-            }
-            if (amt > 0) {
-                base += unit.getScore(amt);
-            }
-        }
-        return base;
+        return PW.estimateScore(Locutus.imp().getNationDB(), this, mmr, infra, projects, cities);
     }
 
     public void setScore(double score) {
@@ -3007,19 +2993,16 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "All time offensive wars involved in")
-    @RolePermission(Roles.MEMBER)
     public int getAllTimeOffensiveWars() {
         return (int) getWars().stream().filter(f -> f.getAttacker_id() == nation_id).count();
     }
 
     @Command(desc = "All time defensive wars involved in")
-    @RolePermission(Roles.MEMBER)
     public int getAllTimeDefensiveWars() {
         return (int) getWars().stream().filter(f -> f.getDefender_id() == nation_id).count();
     }
 
     @Command
-    @RolePermission(Roles.MEMBER)
     public Map.Entry<Integer, Integer> getAllTimeOffDefWars() {
         Set<DBWar> wars = getWars();
         int off = (int) wars.stream().filter(f -> f.getAttacker_id() == nation_id).count();
@@ -3028,7 +3011,6 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "All time wars involved in")
-    @RolePermission(Roles.MEMBER)
     public int getAllTimeWars() {
         return getWars().size();
     }
@@ -3130,7 +3112,7 @@ public class DBNation implements NationOrAlliance {
                 setNukes(amt);
                 break;
             case SPIES:
-                setSpies(amt, false);
+                setSpies(amt, null);
                 break;
             default:
                 throw new UnsupportedOperationException("Unit type not implemented");
@@ -3322,8 +3304,7 @@ public class DBNation implements NationOrAlliance {
             if (updateNewCities && cityObj.size() != cities) force = true;
             if (updateIfOutdated && estimateScore() != this.score) force = true;
             if (force) {
-                System.out.println("Fetch cities for " + getNation() + " | " + getNation_id());
-                Locutus.imp().getNationDB().updateCitiesOfNations(Collections.singleton(nation_id), true,true, Event::post);
+                Locutus.imp().runEventsAsync(events -> Locutus.imp().getNationDB().updateCitiesOfNations(Collections.singleton(nation_id), true,true, events));
                 cityObj = _getCitiesV3();
             }
         }
@@ -3407,13 +3388,14 @@ public class DBNation implements NationOrAlliance {
     public double[] getRevenue() {
         return getRevenue(12);
     }
+
     public double[] getRevenue(int turns) {
         return getRevenue(turns, true, true, true, true, false, false, getTreasureBonusPct(), false);
     }
 
     @Command(desc = "Treasure bonus decimal percent")
     public double getTreasureBonusPct() {
-        if (alliance_id == 0 || getVm_turns() > 0) return 0;
+        if (alliance_id == 0 || getPositionEnum().id < Rank.APPLICANT.id || getVm_turns() > 0) return 0;
         DBAlliance aa = getAlliance();
         int treasures = aa.getNumTreasures();
         Set<DBTreasure> natTreasures = getTreasures();
@@ -3425,7 +3407,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     public double[] getRevenue(int turns, boolean cities, boolean militaryUpkeep, boolean tradeBonus, boolean bonus, boolean noFood, boolean noPower, double treasureBonus, Double forceRads, Boolean forceAtWar, boolean force) {
-        Map<Integer, JavaCity> cityMap = cities ? getCityMap(force, false) : new HashMap<>();
+        Map<Integer, JavaCity> cityMap = cities ? getCityMap(force, force, false) : new HashMap<>();
         double rads = forceRads != null ? forceRads : getRads();
         boolean atWar = forceAtWar != null ? forceAtWar : getNumWars() > 0;
         double[] revenue = PW.getRevenue(null, turns, -1L, this, cityMap.values(), militaryUpkeep, tradeBonus, bonus, noFood, noPower, rads, atWar, treasureBonus);
@@ -3439,7 +3421,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get the number of wars with nations matching a filter")
-    public int getActiveWarsWith(NationFilter filter) {
+    public int getActiveWarsWith(@NoFormat NationFilter filter) {
         int count = 0;
         for (DBWar war : getActiveWars()) {
             DBNation other = war.getNation(!war.isAttacker(this));
@@ -3839,7 +3821,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get the average value of a city attribute for this nation's cities")
-    public double getCityAvg(TypedFunction<DBCity, Double> attribute) {
+    public double getCityAvg(@NoFormat TypedFunction<DBCity, Double> attribute) {
         Map<Integer, DBCity> cities = _getCitiesV3();
         double total = 0;
         for (Map.Entry<Integer, DBCity> entry : cities.entrySet()) {
@@ -3850,7 +3832,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get the summed total of a city attribute for this nation's cities")
-    public double getCityTotal(TypedFunction<DBCity, Double> attribute) {
+    public double getCityTotal(@NoFormat TypedFunction<DBCity, Double> attribute) {
         Map<Integer, DBCity> cities = _getCitiesV3();
         double total = 0;
         for (Map.Entry<Integer, DBCity> entry : cities.entrySet()) {
@@ -3860,8 +3842,19 @@ public class DBNation implements NationOrAlliance {
         return total;
     }
 
+    @Command(desc = "Get the minimum value of a city attribute for this nation's cities")
+    public double getCityMin(@NoFormat TypedFunction<DBCity, Double> attribute) {
+        Map<Integer, DBCity> cities = _getCitiesV3();
+        double min = Double.MAX_VALUE;
+        for (Map.Entry<Integer, DBCity> entry : cities.entrySet()) {
+            Double value = attribute.apply(entry.getValue());
+            if (value != null) min = Math.min(min, value);
+        }
+        return min;
+    }
+
     @Command(desc = "Get the maximum value of a city attribute for this nation's cities")
-    public double getCityMax(TypedFunction<DBCity, Double> attribute) {
+    public double getCityMax(@NoFormat TypedFunction<DBCity, Double> attribute) {
         Map<Integer, DBCity> cities = _getCitiesV3();
         double max = 0;
         for (Map.Entry<Integer, DBCity> entry : cities.entrySet()) {
@@ -3901,24 +3894,6 @@ public class DBNation implements NationOrAlliance {
         return Locutus.imp().getWarDb().getNationsBlockading(nation_id);
     }
 
-    public void toCard(IMessageIO channel, boolean refresh) {
-        String title = nation;
-        String counterEmoji = "Counter";
-        String counterCmd = Settings.commandPrefix(true) + "counter " + getUrl();
-//        String simEmoji = "Simulate";
-//        String simCommand = Settings.commandPrefix(true) + "simulate " + getNationUrl();
-        String refreshEmoji = "Refresh";
-        String refreshCmd = Settings.commandPrefix(true) + "who " + getUrl();
-
-        String response = toEmbedString();
-        response += "To report in-game fraud: " + CM.report.add.cmd.toSlashMention();
-        IMessageBuilder msg = channel.create().embed(title, response)
-                .commandButton(CommandBehavior.UNPRESS, CM.war.counter.nation.cmd.create(getId() + "", null, null, null, null, null, null, null, null, null), "Counter");
-        if (refresh) {
-            msg = msg.commandButton(CM.who.cmd.create(getId() + "", null, null, null, null, null, null, null, null, null), "Refresh");
-        }
-        msg.send();
-    }
     public String toEmbedString() {
         StringBuilder response = new StringBuilder();
         PNWUser user = Locutus.imp().getDiscordDB().getUserFromNationId(getNation_id());
@@ -3992,7 +3967,7 @@ public class DBNation implements NationOrAlliance {
 
     @Command(desc = "Get the city url by index")
     public String cityUrl(int index) {
-        Set<Map.Entry<Integer, JavaCity>> cities = getCityMap(true, false).entrySet();
+        Set<Map.Entry<Integer, JavaCity>> cities = getCityMap(true, true, false).entrySet();
         int i = 0;
         for (Map.Entry<Integer, JavaCity> entry : cities) {
             if (++i == index) {
@@ -4029,7 +4004,7 @@ public class DBNation implements NationOrAlliance {
         return allianceUrl;
     }
 
-    public String toCityMilMarkedown() {
+    public String toCityMilMarkdown() {
         StringBuilder body = new StringBuilder();
         body
                 .append("```")
@@ -4055,7 +4030,7 @@ public class DBNation implements NationOrAlliance {
     public int getRemainingUnitBuy(MilitaryUnit unit, long timeSince) {
         if (unit == MilitaryUnit.INFRASTRUCTURE || unit == MilitaryUnit.MONEY) return -1;
 
-        int previousAmt = getUnits(unit, timeSince);
+        int previousAmt = getUnitsAt(unit, timeSince);
         int currentAmt = getUnits(unit);
         int lostInAttacks = 0;
 
@@ -4077,7 +4052,7 @@ public class DBNation implements NationOrAlliance {
             }
         }
 
-        int numPurchased = currentAmt - previousAmt + lostInAttacks;
+        int numPurchased = Math.max(0, currentAmt - previousAmt + lostInAttacks);
         int maxPerDay = unit.getMaxPerDay(cities, this::hasProject);
         return Math.max(0, maxPerDay - numPurchased);
     }
@@ -4142,6 +4117,23 @@ public class DBNation implements NationOrAlliance {
             StringBuilder response = new StringBuilder("Checking trades...");
 
             List<Auth.TradeResult> trades = tradeSupplier.get();
+            if (trades.isEmpty()) {
+                ApiKeyDetails stats = receiverApi.getApiKeyStats();
+                int bits = stats.getPermission_bits();
+                List<String> errors = new ArrayList<>();
+                if (!ApiKeyPermission.NATION_VIEW_TRADES.has(bits)) {
+                    errors.add("Missing `" + ApiKeyPermission.NATION_VIEW_TRADES + "`");
+                }
+                if (!ApiKeyPermission.NATION_ACCEPT_TRADE.has(bits)) {
+                    errors.add("Missing `" + ApiKeyPermission.NATION_ACCEPT_TRADE + "`");
+                }
+                if (!errors.isEmpty()) {
+                    // for the key starting with <letter> and ending with `<letter>`
+                    String key = stats.getKey();
+                    String redacted = key.substring(0, 1) + "..." + key.substring(key.length() - 1);
+                    throw new IllegalArgumentException("Error: " + String.join(", ", errors) + " for key: `" + redacted + "` at <https://politicsandwar.com/account/#7>");
+                }
+            }
 
             double[] toDeposit = ResourceType.getBuffer();
             for (Auth.TradeResult trade : trades) {
@@ -4244,6 +4236,14 @@ public class DBNation implements NationOrAlliance {
                     responses.add(trade);
                 }
                 List<Auth.TradeResult> result = senderNation.acceptTrades(getNation_id(), amountMapDbl, true);
+                if (responses.size() > 0) {
+                    if (result.size() > 0) {
+                        Auth.TradeResult first = result.get(0);
+                        first.setMessage(StringMan.join(responses, "\n") + "\n" + first.getMessage());
+                    } else {
+                        Logg.text("[Accept Trades] nation:" + getNation_id() + " | No trades to accept: " + responses);
+                    }
+                }
                 return result;
             }
         };
@@ -4642,7 +4642,7 @@ public class DBNation implements NationOrAlliance {
         return response.toString();
     }
 
-    @Command(desc = "The infra level of their highest city")
+    @Command(desc = "The highest infra level in their cities")
     public double maxCityInfra() {
         double maxInfra = 0;
         Collection<DBCity> cities = _getCitiesV3().values();
@@ -4652,8 +4652,18 @@ public class DBNation implements NationOrAlliance {
         return maxInfra;
     }
 
+    @Command(desc = "The highest land level in their cities")
+    public double maxCityLand() {
+        double maxLand = 0;
+        Collection<DBCity> cities = _getCitiesV3().values();
+        for (DBCity city : cities) {
+            maxLand = Math.max(city.getLand(), maxLand);
+        }
+        return maxLand;
+    }
+
     public JsonObject sendMail(ApiKeyPool pool, String subject, String message, boolean priority) throws IOException {
-        if (pool.size() == 1 && pool.getNextApiKey().getKey().equalsIgnoreCase(Settings.INSTANCE.API_KEY_PRIMARY)) {
+        if (pool.size() == 1 && pool.getNextApiKey().getKey().equalsIgnoreCase(Locutus.loader().getApiKey())) {
             Auth auth = Locutus.imp().getRootAuth();
             if (auth != null) {
                 String result = new MailTask(auth, priority, this, subject, message, null).call();
@@ -4663,7 +4673,7 @@ public class DBNation implements NationOrAlliance {
             }
         }
 
-        long exponentialBackoff = 1000;
+        JsonObject lastResult = null;
         while (true) {
             ApiKeyPool.ApiKey pair = pool.getNextApiKey();
             Map<String, String> post = new HashMap<>();
@@ -4672,7 +4682,6 @@ public class DBNation implements NationOrAlliance {
             post.put("message", message);
             String url = "" + Settings.INSTANCE.PNW_URL() + "/api/send-message/?key=" + pair.getKey();
             String result = FileUtil.get(FileUtil.readStringFromURL(priority ? PagePriority.MAIL_SEND_SINGLE : PagePriority.MAIL_SEND_BULK, url, post, null));
-            System.out.println("Result " + result);
             if (result.contains("Invalid API key")) {
                 pair.deleteApiKey();
                 pool.removeKey(pair);
@@ -4685,17 +4694,18 @@ public class DBNation implements NationOrAlliance {
                         return JsonParser.parseString(result).getAsJsonObject();
                     }
                 }
+                Logg.text("Invalid response\n\n---START BODY---\n" + result + "\n---END BODY---");
             }
             try {
-                return JsonParser.parseString(result).getAsJsonObject();
+                JsonObject obj = JsonParser.parseString(result).getAsJsonObject();
+                String generalMessage = obj.get("general_message").getAsString();
+                lastResult = obj;
             } catch (JsonSyntaxException e) {
-                System.out.println("Error sending mail to " + getNation_id() + " with key " + pair.getKey());
-                System.out.println(result);
+                Logg.text("Error sending mail to " + getNation_id() + " with key " + pair.getKey() + "\n\n---START BODY---\n" + result + "\n---END BODY---");
             }
-            System.out.println("Mail response " + result);
             break;
         }
-        return null;
+        return lastResult;
     }
 
     public int estimateBeigeTime() {
@@ -4905,7 +4915,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Alliance rank by score")
-    public int getAllianceRank(@Default NationFilter filter) {
+    public int getAllianceRank(@NoFormat @Default NationFilter filter) {
         if (alliance_id == 0) return Integer.MAX_VALUE;
         return getAlliance().getRank(filter);
     }
@@ -4920,7 +4930,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Number of buildings total")
-    public int getBuildings(@Default Set<Building> buildings) {
+    public int getBuildings(@NoFormat @Default Set<Building> buildings) {
         int total = 0;
         Collection<DBCity> cities = _getCitiesV3().values();
         if (buildings != null) {
@@ -4942,7 +4952,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Number of buildings per city")
-    public double getAvgBuildings(@Default Set<Building> buildings) {
+    public double getAvgBuildings(@NoFormat @Default Set<Building> buildings) {
         int total = 0;
         Collection<DBCity> cities = _getCitiesV3().values();
         if (buildings != null) {
@@ -4986,9 +4996,13 @@ public class DBNation implements NationOrAlliance {
         return db.hasRequiredMMR(this);
     }
 
-    @Command(desc = "Array of the average military buildings (building mmr) in all cities as a decimal\n" +
-            "[barracks, factories, hangars, drydocks]\n" +
-            "e.g. [5.0,5.0,5.0,3.0]")
+    @Command(desc = "The average military buildings (building mmr) in all cities as a decimal\n" +
+            "barracks/factories/hangars/drydocks]\n" +
+            "e.g. 4.9/4.8/4.3/2.5")
+    public String getMMRBuildingDecimal() {
+        double[] arr = getMMRBuildingArr();
+        return Arrays.stream(arr).mapToObj(MathMan::format).collect(Collectors.joining("/"));
+    }
     public double[] getMMRBuildingArr() {
         double barracks = 0; // for rounding
         double factories = 0;
@@ -5050,7 +5064,12 @@ public class DBNation implements NationOrAlliance {
     }
 
     public Activity getActivity(long turns) {
-        return new Activity(getNation_id(), turns);
+        long now = TimeUtil.getTurn();
+        return new Activity(getNation_id(), now - turns, Long.MAX_VALUE);
+    }
+
+    public Activity getActivity(long turnStart, long turnEnd) {
+        return new Activity(getNation_id(), turnStart, turnEnd);
     }
 
     public JsonObject sendMail(Auth auth, boolean priority, String subject, String body) throws IOException {
@@ -5087,7 +5106,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get resource quantity for this nation")
-    public long getTradeQuantity(ValueStore store, long dateStart, @Default Long dateEnd, @Default Set<ResourceType> types, @Default Predicate<DBTrade> filter, @Switch("n") boolean net) {
+    public long getTradeQuantity(ValueStore store, long dateStart, @Default Long dateEnd, @NoFormat @Default Set<ResourceType> types, @NoFormat @Default Predicate<DBTrade> filter, @Switch("n") boolean net) {
         String funcStr = "getTradeQuantity(" + dateStart + "," + dateEnd + "," + StringMan.getString(types) + "," + filter + ")";
         ScopedPlaceholderCache<DBNation> scoped = PlaceholderCache.getScoped(store, DBNation.class, funcStr);
 
@@ -5125,7 +5144,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get resource quantity for this nation")
-    public long getTradeAvgPpu(ValueStore store, long dateStart, @Default Long dateEnd, @Default Set<ResourceType> types, @Default Predicate<DBTrade> filter) {
+    public long getTradeAvgPpu(ValueStore store, long dateStart, @Default Long dateEnd, @NoFormat @Default Set<ResourceType> types, @NoFormat @Default Predicate<DBTrade> filter) {
         String funcStr = "getTradeAvgPpu(" + dateStart + "," + dateEnd + "," + StringMan.getString(types) + "," + filter + ")";
         ScopedPlaceholderCache<DBNation> scoped = PlaceholderCache.getScoped(store, DBNation.class, funcStr);
 
@@ -5165,7 +5184,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get resource quantity for this nation")
-    public double getTradeValue(ValueStore store, long dateStart, @Default Long dateEnd, @Default Set<ResourceType> types, @Default Predicate<DBTrade> filter) {
+    public double getTradeValue(ValueStore store, long dateStart, @Default Long dateEnd, @NoFormat @Default Set<ResourceType> types, @NoFormat @Default Predicate<DBTrade> filter) {
         String funcStr = "getTradeQuantity(" + dateStart + "," + dateEnd + "," + StringMan.getString(types) + "," + filter + ")";
         ScopedPlaceholderCache<DBNation> scoped = PlaceholderCache.getScoped(store, DBNation.class, funcStr);
 
@@ -5206,7 +5225,8 @@ public class DBNation implements NationOrAlliance {
                 hasProject(Projects.ADVANCED_ENGINEERING_CORPS),
                 hasProject(Projects.CENTER_FOR_CIVIL_ENGINEERING),
                 getDomesticPolicy() == DomesticPolicy.URBANIZATION,
-                hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY));
+                hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY),
+                hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
     }
 
     public double landCost(double from, double to) {
@@ -5216,6 +5236,7 @@ public class DBNation implements NationOrAlliance {
         if (getDomesticPolicy() == DomesticPolicy.RAPID_EXPANSION) {
             factor -= 0.05;
             if (hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY)) factor -= 0.025;
+            if (hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS)) factor -= 0.0125;
         }
         return PW.City.Land.calculateLand(from, to) * (to > from ? factor : 1);
     }
@@ -5267,7 +5288,7 @@ public class DBNation implements NationOrAlliance {
             }
         }
 
-        Map<Integer, JavaCity> cityMap = getCityMap(update, false);
+        Map<Integer, JavaCity> cityMap = getCityMap(update, update, false);
         for (Map.Entry<Integer, JavaCity> cityEntry : cityMap.entrySet()) {
             JavaCity city = cityEntry.getValue();
             Map<ResourceType, Double> cityProfit = ResourceType.resourcesToMap(city.profit(continent, getRads(), -1L, this::hasProject, null, cities, 1, 12));
@@ -5338,7 +5359,7 @@ public class DBNation implements NationOrAlliance {
             }
             Locutus.imp().getWarDb().getAttacksByWar(wars, f -> f == AttackType.VICTORY || f == AttackType.PEACE, f -> {
                 if (f.getDate() <= end) {
-                    wars.remove(new ArrayUtil.IntKey(f.getWar_id()));
+                    wars.remove(new DBWar.DBWarKey(f.getWar_id()));
                 }
                 return false;
             }, f -> false);
@@ -5394,21 +5415,13 @@ public class DBNation implements NationOrAlliance {
             body.append(getWarInfoEmbed(war, loot));
         }
         body.append(this.getNationUrlMarkup(true));
-        body.append("\n").append(this.toCityMilMarkedown());
+        body.append("\n").append(this.toCityMilMarkdown());
         return body.toString().replaceAll(" \\| ","|");
     }
 
-//    public int getCities(long date) {
-//
-//    }
-//
-//    public Set<Project> getProjects(long date) {
-//
-//    }
-
     @Command(desc = "Get units at a specific date")
     @RolePermission(Roles.MILCOM)
-    public int getUnits(MilitaryUnit unit, long date) {
+    public int getUnitsAt(MilitaryUnit unit, @Timestamp long date) {
         long now = System.currentTimeMillis();
         if (date > now - TimeUnit.MILLISECONDS.toMillis(15)) {
             return getUnits(unit);
@@ -5416,15 +5429,17 @@ public class DBNation implements NationOrAlliance {
         return Locutus.imp().getNationDB().getMilitary(this, unit, date);
     }
 
-    @Command(desc = "If there is remaining purchase for a unit today")
+    @Command(desc = "If a unit was bought today")
     public boolean hasUnitBuyToday(MilitaryUnit unit) {
         long turnDayStart;
+        long turn;
         if (getSnapshot() != null) {
-            long turn = TimeUtil.getTurn(getSnapshot());
+            turn = TimeUtil.getTurn(getSnapshot());
             turnDayStart = TimeUtil.getTimeFromTurn(turn - turn % 12);
         } else {
-            turnDayStart = TimeUtil.getTimeFromTurn(TimeUtil.getTurn() - TimeUtil.getDayTurn());
+            turn = TimeUtil.getTurn();
         }
+        turnDayStart = TimeUtil.getTimeFromTurn(turn - turn % 12);
         return Locutus.imp().getNationDB().hasBought(this, unit, turnDayStart, getSnapshot());
     }
 
@@ -5631,7 +5646,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get the number of active wars with a list of nations")
-    public int getFighting(Set<DBNation> nations) {
+    public int getFighting(@NoFormat Set<DBNation> nations) {
         if (nations == null) return getNumWars();
         int count = 0;
         for (DBWar war : getActiveWars()) {
@@ -5644,7 +5659,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Cost of buying up to a certain infra level")
-    public double getBuyInfraCost(double toInfra, @Switch("u") boolean forceUrbanization, @Switch("aec") boolean forceAEC, @Switch("cfce") boolean forceCFCE, @Switch("gsa") boolean forceGSA) {
+    public double getBuyInfraCost(double toInfra, @Switch("u") boolean forceUrbanization, @Switch("aec") boolean forceAEC, @Switch("cfce") boolean forceCFCE, @Switch("gsa") boolean forceGSA, @Switch("bda") boolean forceBDA) {
         double total = 0;
         for (Map.Entry<Integer, JavaCity> entry : getCityMap(false).entrySet()) {
             double cityInfra = entry.getValue().getInfra();
@@ -5653,33 +5668,32 @@ public class DBNation implements NationOrAlliance {
                         hasProject(Projects.ADVANCED_ENGINEERING_CORPS) || forceAEC,
                         hasProject(Projects.CENTER_FOR_CIVIL_ENGINEERING) || forceCFCE,
                         getDomesticPolicy() == DomesticPolicy.URBANIZATION || forceUrbanization,
-                        hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY) || forceGSA);
+                        hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY) || forceGSA,
+                        hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS) || forceBDA);
             }
         }
         return total;
     }
 
     @Command(desc = "Cost of buying up to a certain land level")
-    public double getBuyLandCost(double toLand, @Switch("ra") boolean forceRAPolicy, @Switch("aec") boolean forceAEC, @Switch("ala") boolean forceALA, @Switch("gsa") boolean forceGSA) {
-        double factor = 1;
-        if (hasProject(Projects.ADVANCED_ENGINEERING_CORPS) || forceAEC) factor -= 0.05;
-        if (hasProject(Projects.ARABLE_LAND_AGENCY) || forceALA) factor -= 0.05;
-        if (getDomesticPolicy() == DomesticPolicy.RAPID_EXPANSION || forceRAPolicy) {
-            factor -= 0.05;
-            if (hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY) || forceGSA) factor -= 0.025;
-        }
+    public double getBuyLandCost(double toLand, @Switch("ra") boolean forceRAPolicy, @Switch("aec") boolean forceAEC, @Switch("ala") boolean forceALA, @Switch("gsa") boolean forceGSA, @Switch("bda") boolean forceBDA) {
+        boolean ra = getDomesticPolicy() == DomesticPolicy.RAPID_EXPANSION || forceRAPolicy;
+        boolean aec = hasProject(Projects.ADVANCED_ENGINEERING_CORPS) || forceAEC;
+        boolean ala = hasProject(Projects.ARABLE_LAND_AGENCY) || forceALA;
+        boolean gsa = hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY) || forceGSA;
+        boolean bda = hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS) || forceBDA;
         double total = 0;
         for (Map.Entry<Integer, JavaCity> entry : getCityMap(false).entrySet()) {
             double cityLand = entry.getValue().getLand();
             if (cityLand < toLand) {
-                total += PW.City.Land.calculateLand(cityLand, toLand) * factor;
+                total += PW.City.Land.calculateLand(cityLand, toLand, ra, aec, ala, gsa, bda);
             }
         }
         return total;
     }
 
     @Command(desc = "Get the number of active offensive wars with a list of nations")
-    public int getAttacking(Set<DBNation> nations) {
+    public int getAttacking(@NoFormat Set<DBNation> nations) {
         if (nations == null) return getNumWars();
         int count = 0;
         for (DBWar war : getActiveOffensiveWars()) {
@@ -5692,7 +5706,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Get the number of active defensive wars with a list of nations")
-        public int getDefending(Set<DBNation> nations) {
+        public int getDefending(@NoFormat Set<DBNation> nations) {
         if (nations == null) return getNumWars();
         int count = 0;
         for (DBWar war : getActiveDefensiveWars()) {
@@ -5706,34 +5720,34 @@ public class DBNation implements NationOrAlliance {
 
     @Command(desc = "Can perform a spy attack against a nation of score")
     public boolean canSpyOnScore(double score) {
-        double min = PW.getAttackRange(true, false, true, score);
-        double max = PW.getAttackRange(true, false, false, score);
+        double min = PW.getAttackRange(true, false, true, this.score);
+        double max = PW.getAttackRange(true, false, false, this.score);
         return score >= min && score <= max;
     }
 
     @Command(desc = "Can be spied by a nation of score")
     public boolean canBeSpiedByScore(double score) {
-        double min = PW.getAttackRange(false, false, true, score);
-        double max = PW.getAttackRange(false, false, false, score);
+        double min = PW.getAttackRange(false, false, true, this.score);
+        double max = PW.getAttackRange(false, false, false, this.score);
         return score >= min && score <= max;
     }
 
     @Command(desc = "Can declare war on a nation of score")
         public boolean canDeclareOnScore(double score) {
-        double min = PW.getAttackRange(true, true, true, score);
-        double max = PW.getAttackRange(true, true, false, score);
+        double min = PW.getAttackRange(true, true, true, this.score);
+        double max = PW.getAttackRange(true, true, false, this.score);
         return score >= min && score <= max;
     }
 
     @Command(desc = "Can be declared on by a nation of score")
     public boolean canBeDeclaredOnByScore(double score) {
-        double min = PW.getAttackRange(false, true, true, score);
-        double max = PW.getAttackRange(false, true, false, score);
+        double min = PW.getAttackRange(false, true, true, this.score);
+        double max = PW.getAttackRange(false, true, false, this.score);
         return score >= min && score <= max;
     }
 
     @Command(desc = "If this nation is in a nation list")
-    public boolean isIn(Set<DBNation> nations) {
+    public boolean isIn(@NoFormat Set<DBNation> nations) {
         return nations.contains(this);
     }
 
@@ -5987,7 +6001,7 @@ public class DBNation implements NationOrAlliance {
     }
 
     @Command(desc = "Number of wars matching a filter")
-    public int countWars(Predicate<DBWar> warFilter) {
+    public int countWars(@NoFormat Predicate<DBWar> warFilter) {
         return (int) getWars().stream().filter(warFilter).count();
     }
 
@@ -6063,7 +6077,7 @@ public class DBNation implements NationOrAlliance {
 
     @Command(desc = "Are any cities powered")
     public boolean isPowered() {
-        for (Map.Entry<Integer, JavaCity> entry : getCityMap(false, false).entrySet()) {
+        for (Map.Entry<Integer, JavaCity> entry : getCityMap(false, false,false).entrySet()) {
             JavaCity city = entry.getValue();
             if (city.getPoweredInfra() >= city.getInfra()) {
                 JavaCity.Metrics metrics = city.getCachedMetrics();
@@ -6264,8 +6278,8 @@ public class DBNation implements NationOrAlliance {
         return Locutus.imp().getGuildDBByAA(alliance_id);
     }
 
-    public Map.Entry<CommandResult, String> runCommandInternally(Guild guild, User user, String command) {
-        if (user == null) return new AbstractMap.SimpleEntry<>(CommandResult.ERROR, "No user for: " + getNation());
+    public Map.Entry<CommandResult, List<StringMessageBuilder>> runCommandInternally(Guild guild, User user, String command) {
+        if (user == null) return new AbstractMap.SimpleEntry<>(CommandResult.ERROR, StringMessageBuilder.list(null, "No user for: " + getMarkdownUrl()));
 
         StringMessageIO output = new StringMessageIO(user, guild);
         CommandResult type;
@@ -6273,12 +6287,12 @@ public class DBNation implements NationOrAlliance {
         try {
             Locutus.imp().getCommandManager().run(guild, output, user, command, false, true);
             type = CommandResult.SUCCESS;
-            result = output.getOutput();
+            return new AbstractMap.SimpleEntry<>(type, output.getMessages());
         } catch (Throwable e) {
             result = StringMan.stripApiKey(e.getMessage());
             type = CommandResult.ERROR;
+            return new AbstractMap.SimpleEntry<>(type, StringMessageBuilder.list(user, result));
         }
-        return new AbstractMap.SimpleEntry<>(type, result);
     }
 
     public long lastActiveMs(long timestamp) {
@@ -6310,22 +6324,25 @@ public class DBNation implements NationOrAlliance {
     }
 
     public double[] projectCost(Project project) {
-        return project.cost(getDomesticPolicy() == DomesticPolicy.TECHNOLOGICAL_ADVANCEMENT);
+        return project.cost(getDomesticPolicy() == DomesticPolicy.TECHNOLOGICAL_ADVANCEMENT, hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY), hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
     }
 
     public double getGrossModifier() {
         return getGrossModifier(false);
     }
     public double getGrossModifier(boolean noFood) {
-        return getGrossModifier(noFood, getDomesticPolicy() == DomesticPolicy.OPEN_MARKETS, hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY));
+        return getGrossModifier(noFood, getDomesticPolicy() == DomesticPolicy.OPEN_MARKETS, hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY), hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
     }
 
-    public static double getGrossModifier(boolean noFood, boolean openMarkets, boolean gsa) {
+    public static double getGrossModifier(boolean noFood, boolean openMarkets, boolean gsa, boolean bda) {
         double grossModifier = 1;
         if (openMarkets) {
             grossModifier += 0.01;
             if (gsa) {
                 grossModifier += 0.005;
+            }
+            if (bda) {
+                grossModifier += 0.0025;
             }
         }
         if (noFood) grossModifier -= 0.33;
@@ -6338,6 +6355,9 @@ public class DBNation implements NationOrAlliance {
             factor -= 0.05;
             if (hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY)) {
                 factor -= 0.025;
+            }
+            if (hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS)) {
+                factor -= 0.0125;
             }
         }
         return factor;
@@ -6495,5 +6515,30 @@ public class DBNation implements NationOrAlliance {
     @Command(desc = "Sum of all attrition bounties placed on them")
     public double attritionBountyValue() {
         return Locutus.imp().getWarDb().getBounties(nation_id).stream().filter(f -> f.getType() == WarType.ATT).mapToLong(DBBounty::getAmount).sum();
+    }
+
+    public Member getMember(GuildDB db) {
+        if (db != null) {
+            User user = getUser();
+            if (user != null) {
+                return db.getGuild().getMember(user);
+            }
+        }
+        return null;
+    }
+
+    @Command(desc = "Daily revenue of a nation")
+    public Map<ResourceType, Double> revenue(@Default Integer turns,
+                                             @Switch("c") boolean no_cities,
+                                             @Switch("m") boolean no_military,
+                                            @Switch("t") boolean no_trade_bonus,
+                                            @Switch("b") boolean no_new_bonus,
+                                            @Switch("f") boolean no_food,
+                                            @Switch("p") boolean no_power,
+                                            @Switch("r") Double treasure_bonus) {
+        if (turns == null) turns = 12;
+        if (treasure_bonus == null) treasure_bonus = getTreasureBonusPct();
+        double[] rss = getRevenue(turns, !no_cities, !no_military, !no_trade_bonus, !no_new_bonus, no_food, no_power, treasure_bonus, false);
+        return ResourceType.resourcesToMap(rss);
     }
 }

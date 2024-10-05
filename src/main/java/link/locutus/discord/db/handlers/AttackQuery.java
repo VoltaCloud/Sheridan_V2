@@ -24,22 +24,39 @@ import java.util.stream.Collectors;
 
 public class AttackQuery {
 
+    private final WarDB warDb;
     public ObjectOpenHashSet<DBWar> wars;
     public Predicate<AttackType> attackTypeFilter;
     public Predicate<AbstractCursor> preliminaryFilter;
     public Predicate<AbstractCursor> attackFilter;
 
-    public AttackQuery() {
+    public AttackQuery(WarDB warDb) {
+        this.warDb = warDb;
+    }
 
+    public Set<DBWar> getWars() {
+        return wars;
     }
 
     public WarDB getDb() {
-        return Locutus.imp().getWarDb();
+        return warDb;
     }
 
     public AttackQuery withWars(Collection<DBWar> wars) {
         this.wars = wars instanceof ObjectOpenHashSet ? (ObjectOpenHashSet<DBWar>) wars : new ObjectOpenHashSet<>(wars);
         return this;
+    }
+
+    public AttackQuery withWars(long start, long end) {
+        if (end == Long.MAX_VALUE) {
+            if (start <= 0) {
+                return withAllWars();
+            } else {
+                return withWars(getDb().getWars(f -> f.getDate() >= start));
+            }
+        } else {
+            return withWars(getDb().getWars(f -> f.getDate() >= start && f.getDate() <= end));
+        }
     }
 
     public AttackQuery withWars(Map<Integer, DBWar> wars) {
@@ -186,7 +203,7 @@ public class AttackQuery {
                 if (!attackFilterFinal.test(attack)) {
                     return;
                 }
-                DBWar war = wars.get(new ArrayUtil.IntKey(attack.getWar_id()));
+                DBWar war = wars.get(new DBWar.DBWarKey(attack.getWar_id()));
                 cost.addCost(attack, isPrimary.test(war, attack));
             }
         });

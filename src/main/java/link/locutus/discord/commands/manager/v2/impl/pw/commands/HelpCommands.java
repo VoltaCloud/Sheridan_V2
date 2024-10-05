@@ -69,7 +69,6 @@ public class HelpCommands {
             msg.append("Flagged: " + result.isFlagged() + "\n");
             if (result.isFlagged()) {
                 msg.append("Flagged categories: " + result.getFlaggedCategories() + "\n");
-                System.out.println("Category scores: " + result.getScores());
             }
             if (result.isError()) {
                 msg.append("Error message: " + result.getMessage() + "\n");
@@ -79,7 +78,7 @@ public class HelpCommands {
     }
 
     @Command
-    public void argument(@Me IMessageIO io, ValueStore store, PermissionHandler permisser, Parser argument, @Switch("s") boolean skipOptionalArgs) {
+    public void argument(@Me IMessageIO io, Parser argument, @Switch("s") boolean skipOptionalArgs) {
         Key key = argument.getKey();
         String title = "`" + key.toSimpleString() + "`";
         StringBuilder body = new StringBuilder(argument.getNameDescriptionAndExamples(false, true, true, true));
@@ -136,7 +135,7 @@ public class HelpCommands {
             for (ParametricCallable callable : closest) {
                 if (callable.getMethod().equals(pc.getMethod())) continue;
                 embed = embed.commandButton(CommandBehavior.DELETE_MESSAGE,
-                        CM.help.command.cmd.create(callable.getFullPath()),
+                        CM.help.command.cmd.command(callable.getFullPath()),
                         callable.getFullPath());
             }
         }
@@ -146,22 +145,20 @@ public class HelpCommands {
     }
 
     @Command(desc = "Show the description, usage information and permissions for a nation placeholder")
-    public String nation_placeholder(@Me IMessageIO io, NationPlaceholders placeholders, ValueStore store, PermissionHandler permisser, @NationAttributeCallable ParametricCallable command) {
+    public String nation_placeholder(@Me IMessageIO io, ValueStore store, PermissionHandler permisser, @NationAttributeCallable ParametricCallable command) {
         String body = command.toBasicMarkdown(store, permisser, "/", false, true, true);
         String title = "/" + command.getFullPath();
         if (body.length() > 4096) {
             return "#" + title + "\n" + body;
         }
-
         IMessageBuilder embed = io.create().embed(title, body);
-
         PWGPTHandler gpt = Locutus.imp().getCommandManager().getV2().getPwgptHandler();
         if (gpt != null) {
             List<ParametricCallable> closest = gpt.getClosestNationAttributes(store, command, 6);
             for (ParametricCallable other : closest) {
                 if (other.getMethod().equals(command.getMethod())) continue;
                 embed = embed.commandButton(CommandBehavior.DELETE_MESSAGE,
-                        CM.help.nation_placeholder.cmd.create(other.getFullPath()), other.getFullPath());
+                        CM.help.nation_placeholder.cmd.command(other.getFullPath()), other.getFullPath());
             }
         }
 
@@ -174,9 +171,9 @@ public class HelpCommands {
     public void find_setting(@Me IMessageIO io, ValueStore store, String query, @Range(min = 1, max = 25) @Default("5") int num_results) {
         try {
             IMessageBuilder msg = io.create();
-            msg.append("**All settings: **" + CM.settings.info.cmd.create(null, null, "true") + "\n");
-            msg.append("- More Info: " + CM.settings.info.cmd.create("YOUR_KEY_HERE", null, null) + "\n");
-            msg.append("- To Delete: " + CM.settings.delete.cmd.create("YOUR_KEY_HERE") + "\n\n");
+            msg.append("**All settings: **" + CM.settings.info.cmd.key("true") + "\n");
+            msg.append("- More Info: " + CM.settings.info.cmd.key("YOUR_KEY_HERE") + "\n");
+            msg.append("- To Delete: " + CM.settings.delete.cmd.key("YOUR_KEY_HERE") + "\n\n");
 
             List<GuildSetting> results = getGPT().getClosestSettings(store, query, num_results);
             for (int i = 0; i < results.size(); i++) {

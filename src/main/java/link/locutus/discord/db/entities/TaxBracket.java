@@ -3,6 +3,7 @@ package link.locutus.discord.db.entities;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
 import link.locutus.discord.pnw.NationList;
@@ -64,6 +65,11 @@ public class TaxBracket implements NationOrAllianceOrGuildOrTaxid {
         return taxId;
     }
 
+    @Command(desc = "Count the number of nations in this tax bracket")
+    public int countNations(@NoFormat @Default NationFilter filter) {
+        return getNationList(filter).getNations().size();
+    }
+
     @Override
     public String getTypePrefix() {
         return "tax_id";
@@ -116,6 +122,11 @@ public class TaxBracket implements NationOrAllianceOrGuildOrTaxid {
     public String toString() {
         return (allianceId > 0 ? DBAlliance.getOrCreate(allianceId).getQualifiedId() + "- " : "") + ((name != null && !name.isEmpty()) ? (name + "- ") : "") + "#" + taxId + " (" + moneyRate + "/" + rssRate + ")";
     }
+
+    public String getSubText() {
+        return (allianceId > 0 ? DBAlliance.getOrCreate(allianceId).getQualifiedId() + "- " : "") + "#" + taxId + " (" + moneyRate + "/" + rssRate + ")";
+    }
+
 
     @Command(desc = "Tax rate object")
     public TaxRate getTaxRate() {

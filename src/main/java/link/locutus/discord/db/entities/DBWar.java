@@ -7,6 +7,7 @@ import link.locutus.discord.apiv1.enums.AttackType;
 import link.locutus.discord.apiv1.enums.MilitaryUnit;
 import link.locutus.discord.apiv1.enums.SuccessType;
 import link.locutus.discord.config.Settings;
+import link.locutus.discord.db.NationDB;
 import link.locutus.discord.util.MarkupUtil;
 import link.locutus.discord.util.MathMan;
 import link.locutus.discord.util.PW;
@@ -33,6 +34,24 @@ public class DBWar {
     private byte warStatusType;
     private final long date;
     private char attDefCities;
+
+    public static final class DBWarKey {
+        public final int id;
+        public DBWarKey(int id) {
+            this.id = id;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return ((DBWar) o).warId == id;
+        }
+
+        @Override
+        public int hashCode() {
+            return id;
+        }
+    }
+
     public int getTurnsLeft() {
         return (int) (TimeUtil.getTurn() - TimeUtil.getTurn(getDate()) + 60);
     }
@@ -117,7 +136,11 @@ public class DBWar {
     }
 
     public DBWar(War war) {
-         this(war.getId(), war.getAtt_id(), war.getDef_id(), war.getAtt_alliance_id(), war.getDef_alliance_id(), WarType.fromV3(war.getWar_type()), getStatus(war), war.getDate().toEpochMilli(), getCities(war.getAtt_id()), getCities(war.getDef_id()));
+        this(war, true);
+    }
+
+    public DBWar(War war, boolean cities) {
+         this(war.getId(), war.getAtt_id(), war.getDef_id(), war.getAtt_alliance_id(), war.getDef_alliance_id(), WarType.fromV3(war.getWar_type()), getStatus(war), war.getDate().toEpochMilli(), cities ? getCities(war.getAtt_id()) : 0, cities ? getCities(war.getDef_id()) : 0);
     }
 
     private static int getAA(String aaStr) {
@@ -139,7 +162,11 @@ public class DBWar {
     }
 
     private static int getCities(int nationId) {
-        DBNation nation = Locutus.imp().getNationDB().getNation(nationId);
+        Locutus lc = Locutus.imp();
+        if (lc == null) return 0;
+        NationDB natDb = lc.getNationDB();
+        if (natDb == null) return 0;
+        DBNation nation = natDb.getNation(nationId);
         return nation == null ? 0 : nation.getCities();
     }
 
@@ -164,7 +191,7 @@ public class DBWar {
             double lootValue = enemy.lootTotal();
             body.append("$" + MathMan.format((int) lootValue));
         }
-        body.append(enemy.toCityMilMarkedown());
+        body.append(enemy.toCityMilMarkdown());
 
         String attStr = card.condensedSubInfo(isAttacker);
         String defStr = card.condensedSubInfo(!isAttacker);

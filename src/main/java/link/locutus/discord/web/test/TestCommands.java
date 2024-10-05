@@ -3,11 +3,14 @@ package link.locutus.discord.web.test;
 import link.locutus.discord.apiv1.enums.DepositType;
 import link.locutus.discord.apiv1.enums.FlowType;
 import link.locutus.discord.apiv1.enums.ResourceType;
+import link.locutus.discord.apiv1.enums.TreatyType;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Arg;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
+import link.locutus.discord.commands.manager.v2.command.CommandBehavior;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.ICommand;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePermission;
@@ -18,28 +21,30 @@ import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.entities.Transaction2;
 import link.locutus.discord.user.Roles;
-import link.locutus.discord.util.ImageUtil;
-import link.locutus.discord.util.MathMan;
-import link.locutus.discord.util.PW;
-import link.locutus.discord.util.StringMan;
+import link.locutus.discord.util.*;
 import link.locutus.discord.util.discord.DiscordUtil;
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.Message;
+import net.dv8tion.jda.api.entities.Webhook;
+import net.dv8tion.jda.api.entities.channel.ChannelType;
+import net.dv8tion.jda.api.entities.channel.concrete.NewsChannel;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class TestCommands {
 //    @Command
-//    public String test(@Me IMessageIO io, String arg1) throws IOException {
-////        io.create().embed("Title", "Body goes here").commandButton(CM.fun.say.cmd.create("Hello World"), "test").file("test.txt", "hello world 2").send();
-//////        return "<https://www.google.com> test <https://www.google.com> <script>alert(1)</script> **message bold** [test](https://www.google.com)\n" +
-//////                "- " + CM.fun.borg.cmd.toSlashMention() + "\n" +
-//////                "- " + CM.fun.borg.cmd.create("Hello World").toSlashCommand(true);
-//        return "Arg " + arg1;
+//    public String test(@Me Guild guild, Set<TreatyType> treaties) throws IOException {
+//        return "dummy";
 //    }
 
     @Command(desc = "Dummy command. No output")
@@ -190,30 +195,4 @@ public class TestCommands {
         response.append("```json\n" + ResourceType.toString(deposited) + "\n```\n");
         return response.toString();
     }
-
-//    public String test(NationPlaceholders placeholders, ValueStore store, String input, @Me DBNation me, @Me User user) {
-//        return placeholders.format2(store, input, me);
-//        if (me != null) {
-//            System.out.println("Me " + me.getNationUrl());
-//        } else {
-//            System.out.println("Me is null");
-//        }
-//        DBNation t = (DBNation) store.getProvided(Key.of(DBNation.class, Me.class));
-//        if (t != null) {
-//            System.out.println("Nation " + t.getMarkdownUrl());
-//        }
-//        System.out.println("Store " + store.toString());
-//
-//        Set<DBNation> nations = placeholders.parseSet(store, input);
-//
-//        StringBuilder response = new StringBuilder();
-//        response.append(nations.size() + " nations found\n");
-//        if (nations.size() < 100) {
-//            // print each
-//            for (DBNation nation : nations) {
-//                response.append(nation.getNationUrlMarkup(false) + " | " + nation.getAllianceUrlMarkup(false)).append("\n");
-//            }
-//        }
-//        return response.toString() + " | " + me.getNationUrlMarkup(false) + " | " + user.getAsMention();
-//    }
 }

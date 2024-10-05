@@ -4,6 +4,7 @@ import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.db.GuildDB;
@@ -28,6 +29,10 @@ public class AddBalance extends Command {
         super(CommandCategory.ECON, CommandCategory.GOV, "addbalance", "addb");
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.deposits.add.cmd);
+    }
     @Override
     public boolean checkPermission(Guild server, User user) {
         return Roles.ECON.has(user, server);
@@ -59,6 +64,9 @@ public class AddBalance extends Command {
         }
         if (note == null) {
             return "Please use a note e.g. #deposit";
+        }
+        if (note.equalsIgnoreCase("#ignore") && !flags.contains('f')) {
+            throw new IllegalArgumentException("Using `#ignore` will not affect the user's balance, but will add an entry to their bank log. Please use `-f` to confirm");
         }
         GuildDB guildDb = Locutus.imp().getGuildDB(guild);
         if (guildDb == null) return "No guild.";

@@ -3,6 +3,7 @@ package link.locutus.discord.apiv1.enums.city.project;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.NationAttributeDouble;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.entities.DBNation;
@@ -28,7 +29,7 @@ public interface Project {
     }
 
     @Command(desc = "Get number of projects for a set of nations")
-    default int getCount(@Default Set<DBNation> nations) {
+    default int getCount(@NoFormat @Default Set<DBNation> nations) {
         Collection<DBNation> all = nations;
         if (all == null) all = Locutus.imp().getNationDB().getNations().values();
         int count = 0;
@@ -39,7 +40,7 @@ public interface Project {
     }
 
     @Command(desc = "Get average attribute for nations with this project")
-    default double getAvg(NationAttributeDouble attribute, @Default Set<DBNation> nations) {
+    default double getAvg(@NoFormat NationAttributeDouble attribute, @NoFormat @Default Set<DBNation> nations) {
         Collection<DBNation> all = nations;
         if (all == null) all = Locutus.imp().getNationDB().getNations().values();
         double total = 0;
@@ -53,7 +54,7 @@ public interface Project {
     }
 
     @Command(desc = "Get total attribute for nations with this project")
-    default double getTotal(NationAttributeDouble attribute, @Default Set<DBNation> nations) {
+    default double getTotal(@NoFormat NationAttributeDouble attribute, @NoFormat @Default Set<DBNation> nations) {
         Collection<DBNation> all = nations;
         if (all == null) all = Locutus.imp().getNationDB().getNations().values();
         double total = 0;
@@ -66,10 +67,17 @@ public interface Project {
         return total / count;
     }
 
-    default double[] cost(boolean technologicalAdvancement) {
+    default double[] cost(boolean technologicalAdvancement, boolean governmentSupportAgency, boolean bureauOfDomesticAffairs) {
         double[] cost = ResourceType.resourcesToArray(cost());
         if (technologicalAdvancement) {
-            cost = PW.multiply(cost, 0.95);
+            double factor = 0.95;
+            if (governmentSupportAgency) {
+                factor -= 0.025;
+            }
+            if (bureauOfDomesticAffairs) {
+                factor -= 0.0125;
+            }
+            cost = PW.multiply(cost, factor);
         }
         return cost;
     }

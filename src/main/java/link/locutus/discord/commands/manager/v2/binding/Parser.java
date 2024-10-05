@@ -1,5 +1,6 @@
 package link.locutus.discord.commands.manager.v2.binding;
 
+import com.google.gson.JsonObject;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Binding;
 import link.locutus.discord.commands.manager.v2.binding.validator.ValidatorStore;
 import link.locutus.discord.commands.manager.v2.command.ArgumentStack;
@@ -20,6 +21,15 @@ public interface Parser<T> {
     Key getKey();
 
     String getDescription();
+
+    default String getWebTypeStr() {
+        Key key = getKey();
+        Binding binding = key.getBinding();
+        if (binding != null && !binding.webType().isEmpty()) {
+            return binding.webType();
+        }
+        return key.toSimpleString();
+    }
 
     default T apply(LocalValueStore store, ValidatorStore validators, PermissionHandler permisser, String... args) {
         List<String> argsList;
@@ -87,4 +97,6 @@ public interface Parser<T> {
         }
         return result.toString();
     }
+
+    JsonObject toJson();
 }

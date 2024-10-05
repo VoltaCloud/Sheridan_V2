@@ -80,12 +80,9 @@ public class TradeDB extends DBMainV2 {
                 .putColumn("name", ColumnType.VARCHAR.struct().setNullAllowed(false).configure(f -> f.apply(32)))
                 .putColumn("bonus", ColumnType.INT.struct().setNullAllowed(false).configure(f -> f.apply(null)))
                 .create(getDb());
-
-        try {
-            try (PreparedStatement close = prepareQuery("ALTER TABLE TRADES ADD COLUMN `type` INT NOT NULL DEFAULT 0" )) {close.execute();}
-            try (PreparedStatement close = prepareQuery("ALTER TABLE TRADES ADD COLUMN `date_accepted` BIGINT NOT NULL DEFAULT 0" )) {close.execute();}
-            try (PreparedStatement close = prepareQuery("ALTER TABLE TRADES ADD COLUMN `parent_id` INT NOT NULL DEFAULT 0" )) {close.execute();}
-        } catch (SQLException ignore) {}
+        executeStmt("ALTER TABLE TRADES ADD COLUMN `type` INT NOT NULL DEFAULT 0", true);
+        executeStmt("ALTER TABLE TRADES ADD COLUMN `date_accepted` BIGINT NOT NULL DEFAULT 0", true);
+        executeStmt("ALTER TABLE TRADES ADD COLUMN `parent_id` INT NOT NULL DEFAULT 0", true);
 
         String query = TablePreset.create("SUBSCRIPTIONS_2")
                 .putColumn("user", ColumnType.BIGINT.struct().setNullAllowed(false).configure(f -> f.apply(null)))
@@ -126,7 +123,6 @@ public class TradeDB extends DBMainV2 {
                     "`exchangePPU` BLOB)";
             executeStmt(stmt);
         }
-
         purgeExpiredMarketOffers();
         purgeSubscriptions();
         loadColorBlocs();
@@ -160,7 +156,7 @@ public class TradeDB extends DBMainV2 {
                 }
             }
         }
-        public BulkTradeOffer(int resourceId, int nation, long quantity, boolean isBuy, int minPPU, int maxPPU, boolean negotiable, long expire, List<ResourceType> exchangeFor, double[] exchangePPU) {
+        public BulkTradeOffer(int resourceId, int nation, long quantity, boolean isBuy, int minPPU, int maxPPU, boolean negotiable, long expire, Set<ResourceType> exchangeFor, double[] exchangePPU) {
             this.resourceId = resourceId;
             this.nation = nation;
             this.quantity = quantity;

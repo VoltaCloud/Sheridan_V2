@@ -11,6 +11,7 @@ import link.locutus.discord.db.entities.AttackCost;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.entities.Transaction2;
 import link.locutus.discord.util.PW;
+import link.locutus.discord.util.TimeUtil;
 import link.locutus.discord.util.math.ArrayUtil;
 import link.locutus.discord.util.offshore.Grant;
 
@@ -31,16 +32,24 @@ public class WarchestTemplate extends AGrantTemplate<Map<ResourceType, Double>> 
     private final boolean subtractExpenditure;
     private final long overdrawPercentCents;
     public WarchestTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, ResultSet rs) throws SQLException {
-        this(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, rs.getLong("date_created"), ArrayUtil.toDoubleArray(rs.getBytes("allowance_per_city")), rs.getLong("track_days"), rs.getBoolean("subtract_expenditure"), rs.getLong("overdraw_percent_cents"),
+        this(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, rs.getLong("date_created"), getBytesOrNull("allowance_per_city", rs), rs.getLong("track_days"), rs.getBoolean("subtract_expenditure"), rs.getLong("overdraw_percent_cents"),
                 rs.getLong("expire"),
                 rs.getLong("decay"),
                 rs.getBoolean("allow_ignore"),
-                rs.getBoolean("repeatable"));
+                rs.getLong("repeatable"));
+    }
+
+    private static double[] getBytesOrNull(String name, ResultSet rs) throws SQLException {
+        byte[] bytes = rs.getBytes(name);
+        if (bytes == null) {
+            return null;
+        }
+        return ArrayUtil.toDoubleArray(bytes);
     }
 
     // create new constructor  with typed parameters instead of resultset
-    public WarchestTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, double[] allowancePerCity, long trackDays, boolean subtractExpenditure, long overdrawPercentCents, long expiryOrZero, long decayOrZero, boolean allowIgnore, boolean repeatable) {
-        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable);
+    public WarchestTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, double[] allowancePerCity, long trackDays, boolean subtractExpenditure, long overdrawPercentCents, long expiryOrZero, long decayOrZero, boolean allowIgnore, long repeatable_time) {
+        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable_time);
         this.allowancePerCity = allowancePerCity;
         this.trackDays = trackDays;
         this.subtractExpenditure = subtractExpenditure;
@@ -49,22 +58,24 @@ public class WarchestTemplate extends AGrantTemplate<Map<ResourceType, Double>> 
 
     @Override
     public String getCommandString(String name, String allowedRecipients, String econRole, String selfRole, String bracket, String useReceiverBracket, String maxTotal, String maxDay, String maxGranterDay, String maxGranterTotal, String allowExpire, String allowDecay, String allowIgnore, String repeatable) {
-        return CM.grant_template.create.warchest.cmd.create(name,
-                allowedRecipients,
-                allowancePerCity == null ? null : ResourceType.resourcesToString(allowancePerCity),
-                trackDays <= 0 ? null : trackDays + "",
-                subtractExpenditure ? "true" : null,
-                overdrawPercentCents <= 0 ? null : overdrawPercentCents + "",
-                econRole,
-                selfRole,
-                bracket,
-                useReceiverBracket,
-                maxTotal,
-                maxDay,
-                maxGranterDay,
-                maxGranterTotal, allowExpire, allowDecay, allowIgnore,
-                isRepeatable() ? null : "true",
-                null).toSlashCommand();
+        return CM.grant_template.create.warchest.cmd.name(name).allowedRecipients(
+                allowedRecipients).allowancePerCity(
+                allowancePerCity == null ? null : ResourceType.resourcesToString(allowancePerCity)).trackDays(
+                trackDays <= 0 ? null : trackDays + "").subtractExpenditure(
+                subtractExpenditure ? "true" : null).overdrawPercent(
+                overdrawPercentCents <= 0 ? null : overdrawPercentCents + "").econRole(
+                econRole).selfRole(
+                selfRole).bracket(
+                bracket).useReceiverBracket(
+                useReceiverBracket).maxTotal(
+                maxTotal).maxDay(
+                maxDay).maxGranterDay(
+                maxGranterDay).maxGranterTotal(
+                maxGranterTotal).expireTime(
+                allowExpire).decayTime(
+                allowDecay).allowIgnore(
+                allowIgnore).repeatable_time(
+                getRepeatable() <= 0 ? null : TimeUtil.secToTime(TimeUnit.MILLISECONDS, getRepeatable())).toString();
     }
 
     @Override
@@ -153,26 +164,31 @@ public class WarchestTemplate extends AGrantTemplate<Map<ResourceType, Double>> 
 
     @Override
     public void setValues(PreparedStatement stmt) throws SQLException {
+        if (allowancePerCity == null) {
+            stmt.setNull(17, java.sql.Types.BINARY);
+        } else {
         stmt.setBytes(17, ArrayUtil.toByteArray(allowancePerCity));
+        }
         stmt.setLong(18, trackDays);
         stmt.setBoolean(19, subtractExpenditure);
         stmt.setLong(20, overdrawPercentCents);
     }
 
     @Override
-    public List<Grant.Requirement> getDefaultRequirements(@Nullable DBNation sender, @Nullable DBNation receiver, Map<ResourceType, Double> parsed) {
-        List<Grant.Requirement> list = super.getDefaultRequirements(sender, receiver, parsed);
-        list.addAll(getRequirements(sender, receiver, this, parsed));
+    public List<Grant.Requirement> getDefaultRequirements(GuildDB db, @Nullable DBNation sender, @Nullable DBNation receiver, Map<ResourceType, Double> parsed, boolean confirm) {
+        List<Grant.Requirement> list = super.getDefaultRequirements(db, sender, receiver, parsed, confirm);
+        list.addAll(getRequirements(db, sender, receiver, this, parsed));
         return list;
     }
 
-    public static List<Grant.Requirement> getRequirements(DBNation sender, DBNation receiver, WarchestTemplate template, Map<ResourceType, Double> parsed) {
+    public static List<Grant.Requirement> getRequirements(GuildDB db, DBNation sender, DBNation receiver, WarchestTemplate template, Map<ResourceType, Double> parsed) {
         List<Grant.Requirement> list = new ArrayList<>();
 
         if (template == null || parsed != null) {
-            list.add(new Grant.Requirement("Amount must NOT be negative: `" + (template == null ? "{amount}" : ResourceType.resourcesToString(parsed)) + "`", false, new Function<DBNation, Boolean>() {
+            list.add(new Grant.Requirement("Amount must NOT be negative: `" + (parsed == null ? "{amount}" : ResourceType.resourcesToString(parsed)) + "`", false, new Function<DBNation, Boolean>() {
                 @Override
                 public Boolean apply(DBNation nation) {
+                    if (parsed == null) return true;
                     for (Map.Entry<ResourceType, Double> entry : parsed.entrySet()) {
                         if (entry.getValue() < 0) {
                             return false;
@@ -181,10 +197,9 @@ public class WarchestTemplate extends AGrantTemplate<Map<ResourceType, Double>> 
                     return true;
                 }
             }));
-
             double[] allowance;
             StringBuilder allowanceStr = new StringBuilder();
-            if (receiver != null) {
+            if (receiver != null && template != null) {
                 allowance = template.getCost(null, sender, receiver, parsed, allowanceStr);
             } else {
                 allowance = null;
@@ -240,7 +255,7 @@ public class WarchestTemplate extends AGrantTemplate<Map<ResourceType, Double>> 
         // received #warchest
         double[] received = ResourceType.getBuffer();
 
-        for (Transaction2 record : receiver.getTransactions(true)) {
+        for (Transaction2 record : receiver.getTransactions(-1, true)) {
             if(record.tx_datetime > cutoff && record.note != null && record.sender_id == receiver.getId()) {
                 Map<String, String> notes = PW.parseTransferHashNotes(record.note);
                 if (notes.containsKey("#warchest")) {

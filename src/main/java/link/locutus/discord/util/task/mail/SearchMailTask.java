@@ -14,10 +14,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
 import java.net.URLEncoder;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
@@ -38,7 +35,6 @@ public class SearchMailTask implements Callable<List<Mail>> {
         } else {
             this.url = "https://politicsandwar.com/index.php?id=16&backpage=%3C%3C&maximum=15000&minimum=0&od=DESC&searchTerm=" + URLEncoder.encode(query);
         }
-        System.out.println("URL " + url);
         this.checkUnread = checkUnread;
         this.checkRead = checkRead;
         this.readContent = readContent;
@@ -100,8 +96,6 @@ public class SearchMailTask implements Callable<List<Mail>> {
                     if (skipUnread && !recRead) continue;
 
                     if (unread && checkUnread || !unread && checkRead) {
-                        System.out.println("Row " + row.html());
-                        System.out.println("Columns " + columns.html());
                         String url = columns.get(2).getElementsByTag("a").first().attr("href");
                         int msgId = Integer.parseInt(url.split("=")[1]);
 
@@ -117,14 +111,11 @@ public class SearchMailTask implements Callable<List<Mail>> {
                         List<String> messagesStr = new ArrayList<>();
 
                         if (readContent) {
-                            Document msgDom = Jsoup.parse(auth.readStringFromURL(PagePriority.MAIL_READ, url, Collections.emptyMap()));
-                            Elements messages = msgDom.select(".red-msg");
-
-                            for (Element message : messages) {
-                                message.child(0).remove();
-                                String firstMsg = message.text();
-                                String msgMarkdown = MarkupUtil.htmlToMarkdown(firstMsg);
-                                messagesStr.add(msgMarkdown);
+                            List<ReadMailTask.MailMessage> replies = new ReadMailTask(auth, msgId).call();
+                            for (ReadMailTask.MailMessage reply : replies) {
+                                if (reply.isReceived()) {
+                                    messagesStr.add(reply.getContent());
+                                }
                             }
                         } else {
                             messagesStr.add("" + recRead);

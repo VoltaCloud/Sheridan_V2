@@ -20,8 +20,8 @@ import link.locutus.discord.apiv1.enums.city.project.Projects;
 import link.locutus.discord.apiv3.csv.header.CityHeader;
 import link.locutus.discord.apiv3.csv.DataDumpParser;
 import link.locutus.discord.apiv3.csv.header.NationHeader;
-import link.locutus.discord.commands.rankings.table.TableNumberFormat;
-import link.locutus.discord.commands.rankings.table.TimeNumericTable;
+import link.locutus.discord.commands.manager.v2.table.TableNumberFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeNumericTable;
 import link.locutus.discord.db.entities.AttackCost;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBCity;
@@ -53,7 +53,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import static link.locutus.discord.commands.rankings.table.TableNumberFormat.*;
+import static link.locutus.discord.commands.manager.v2.table.TableNumberFormat.*;
 
 public enum AllianceMetric implements IAllianceMetric {
     SOLDIER(false, SI_UNIT, new UnitMetric(MilitaryUnit.SOLDIER, f -> f.soldiers)),
@@ -646,6 +646,7 @@ public enum AllianceMetric implements IAllianceMetric {
         private final Map<Integer, Boolean> advancedUrbanPlanningByNation = new Int2ObjectOpenHashMap<>();
         private final Map<Integer, Boolean> metropolitanPlanningByNation = new Int2ObjectOpenHashMap<>();
         private final Map<Integer, Boolean> governmentSupportAgencyByNation = new Int2ObjectOpenHashMap<>();
+        private final Map<Integer, Boolean> bdaByNation = new Int2ObjectOpenHashMap<>();
 
         @Override
         public void setupReaders(DataDumpImporter importer) {
@@ -678,6 +679,9 @@ public enum AllianceMetric implements IAllianceMetric {
                     if (header.government_support_agency_np.get() == Boolean.TRUE) {
                         governmentSupportAgencyByNation.put(nationId, header.government_support_agency_np.get());
                     }
+                    if (header.bureau_of_domestic_affairs_np.get() == Boolean.TRUE) {
+                        bdaByNation.put(nationId, header.bureau_of_domestic_affairs_np.get());
+                    }
                 }
             });
             importer.setCityReader(this, new BiConsumer<Long, CityHeader>() {
@@ -709,7 +713,8 @@ public enum AllianceMetric implements IAllianceMetric {
                 boolean aup = advancedUrbanPlanningByNation.getOrDefault(nationId, false);
                 boolean mp = metropolitanPlanningByNation.getOrDefault(nationId, false);
                 boolean gsa = governmentSupportAgencyByNation.getOrDefault(nationId, false);
-                double cost = PW.City.cityCost(previousCities, totalCities, md, up, aup, mp, gsa);
+                boolean bda = bdaByNation.getOrDefault(nationId, false);
+                double cost = PW.City.cityCost(previousCities, totalCities, md, up, aup, mp, gsa, bda);
                 int allianceId = allianceByNationId.get(nationId);
                 cities10D.merge(allianceId, cost, Double::sum);
             }
@@ -720,6 +725,7 @@ public enum AllianceMetric implements IAllianceMetric {
             advancedUrbanPlanningByNation.clear();
             metropolitanPlanningByNation.clear();
             governmentSupportAgencyByNation.clear();
+            bdaByNation.clear();
             return cities10D;
         }
 
@@ -1093,7 +1099,6 @@ public enum AllianceMetric implements IAllianceMetric {
     public static AllianceMetric[] values = AllianceMetric.values();
 
     public static synchronized void update(int topX) {
-        System.out.println("Updating metrics for top " + topX + " alliances");
         long turn = TimeUtil.getTurn();
         Set<DBAlliance> alliances = Locutus.imp().getNationDB().getAlliances(true, true, true, topX);
         List<AllianceMetricValue> toAdd = new ArrayList<>();
@@ -1149,7 +1154,6 @@ public enum AllianceMetric implements IAllianceMetric {
             values.clear();
         };
         runDataDump(parser, metrics, acceptDay, (metric, day, value) -> {
-            System.out.println("Run day " + day);
             for (Map.Entry<Integer, Double> entry : value.entrySet()) {
                 if (saveAllTurns) {
                     for (int i = 0; i < 12; i++) {

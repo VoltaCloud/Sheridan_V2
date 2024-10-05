@@ -22,7 +22,7 @@ import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.impl.discord.binding.annotation.NationDepositLimit;
 import link.locutus.discord.commands.manager.v2.binding.annotation.RegisteredRole;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.NationAttributeDouble;
-import link.locutus.discord.commands.manager.v2.binding.bindings.Operation;
+import link.locutus.discord.commands.manager.v2.binding.bindings.MathOperation;
 import link.locutus.discord.commands.manager.v2.command.ArgumentStack;
 import link.locutus.discord.commands.manager.v2.command.ParameterData;
 import link.locutus.discord.commands.manager.v2.command.ParametricCallable;
@@ -33,8 +33,8 @@ import link.locutus.discord.commands.manager.v2.impl.pw.commands.UnsortedCommand
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.NationPlaceholders;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.PlaceholdersMap;
 import link.locutus.discord.config.Settings;
-import link.locutus.discord.db.Conflict;
-import link.locutus.discord.db.ConflictManager;
+import link.locutus.discord.db.conflict.Conflict;
+import link.locutus.discord.db.conflict.ConflictManager;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.ReportManager;
 import link.locutus.discord.db.entities.*;
@@ -67,7 +67,6 @@ import link.locutus.discord.user.Roles;
 import link.locutus.discord.util.MathMan;
 import link.locutus.discord.util.PW;
 import link.locutus.discord.util.SpyCount;
-import link.locutus.discord.util.sheet.GoogleDoc;
 import link.locutus.discord.util.task.ia.IACheckup;
 import link.locutus.discord.web.WebUtil;
 import link.locutus.discord.web.commands.HtmlInput;
@@ -86,6 +85,7 @@ import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -460,8 +460,6 @@ public class WebPWBindings extends WebBindingHelper {
         List<Guild> guilds = user.getMutualGuilds();
 
         AllianceList aaList = includeBrackets && db == null ? null : db.getAllianceList();
-        Map<Integer, TaxBracket> taxIds = aaList == null || aaList.isEmpty() ? null : aaList.getTaxBrackets(true);
-
         List<NationOrAllianceOrGuildOrTaxid> options = new ArrayList<>(alliances.size() + nations.size() + guilds.size());
         for (Guild guild : guilds) {
             options.add(Locutus.imp().getGuildDB(guild));
@@ -1128,9 +1126,9 @@ public class WebPWBindings extends WebBindingHelper {
     }
 
     @HtmlInput
-    @Binding(types= Operation.class)
+    @Binding(types= MathOperation.class)
     public String operation(ParameterData param) {
-        return multipleSelect(param, Arrays.asList(Operation.values()), op -> new AbstractMap.SimpleEntry<>(op.name(), op.name()));
+        return multipleSelect(param, Arrays.asList(MathOperation.values()), op -> new AbstractMap.SimpleEntry<>(op.name(), op.name()));
     }
 
     @HtmlInput
@@ -1240,7 +1238,7 @@ public class WebPWBindings extends WebBindingHelper {
     @HtmlInput
     @Binding(types= TaxBracket.class)
     public String bracket(@Me GuildDB db, ParameterData param) {
-        Map<Integer, TaxBracket> brackets = db.getAllianceList().getTaxBrackets(true);
+        Map<Integer, TaxBracket> brackets = db.getAllianceList().getTaxBrackets(TimeUnit.MINUTES.toMillis(1));
         Collection<TaxBracket> options = brackets.values();
         return WebUtil.generateSearchableDropdown(param, options, (obj, names, values, subtext) -> {
             DBAlliance alliance = obj.getAlliance();

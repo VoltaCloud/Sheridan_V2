@@ -1,7 +1,7 @@
 package link.locutus.wiki.game;
 
 import link.locutus.discord.Locutus;
-import link.locutus.discord.db.ConflictManager;
+import link.locutus.discord.db.conflict.ConflictManager;
 import link.locutus.discord.db.ForumDB;
 import link.locutus.discord.db.entities.DBTopic;
 import link.locutus.discord.util.MathMan;
@@ -153,8 +153,6 @@ public class PWWikiPage {
         return null;
     }
 
-
-
     public Map.Entry<Set<Integer>, Set<Integer>> getCombatants(Set<String> unknownCombatants, long dateStart) {
         List<String> combatants = getTableData().get("combatants");
         if (combatants == null || combatants.size() != 2) {
@@ -170,7 +168,7 @@ public class PWWikiPage {
             f = Normalizer.normalize(f, Normalizer.Form.NFKD);
             Integer id = manager.getAllianceId(f, dateStart);
             if (id == null) {
-                Map.Entry<String, Integer> similar = manager.getMostSimilar(f);
+                Map.Entry<String, Double> similar = manager.getMostSimilar(f);
                 System.out.println("Unknown combatant: `" + f + "` " + (similar == null ? "" : " | Similar: " + similar.getKey() + "=" + similar.getValue()));
 //                System.out.println(" -  for " + slug + " | https://politicsandwar.fandom.com/wiki/" + urlStub);
                 unknownCombatants.add(f);
@@ -181,7 +179,7 @@ public class PWWikiPage {
             f = Normalizer.normalize(f, Normalizer.Form.NFKD);
             Integer id = manager.getAllianceId(f, dateStart);
             if (id == null) {
-                Map.Entry<String, Integer> similar = manager.getMostSimilar(f);
+                Map.Entry<String, Double> similar = manager.getMostSimilar(f);
                 System.out.println("Unknown combatant: `" + f + "` " + (similar == null ? "" : " | Similar: " + similar.getKey() + "=" + similar.getValue()));
 //                System.out.println(" -  for " + slug + " | https://politicsandwar.fandom.com/wiki/" + urlStub);
                 unknownCombatants.add(f);
@@ -282,7 +280,11 @@ public class PWWikiPage {
             Elements parents = link.parents();
             for (Element parent : parents) {
                 if (parent.tagName().equalsIgnoreCase("li")) {
-                    desc = parent.text();
+                    String parentText = parent.text();
+                    if (parentText.length() > 100 || parent.html().contains("navbox-subgroup")) {
+                        break;
+                    }
+                    desc = parentText;
                     break;
                 }
             }

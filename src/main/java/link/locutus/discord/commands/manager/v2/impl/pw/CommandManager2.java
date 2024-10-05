@@ -2,18 +2,17 @@ package link.locutus.discord.commands.manager.v2.impl.pw;
 
 import ai.djl.MalformedModelException;
 import ai.djl.repository.zoo.ModelNotFoundException;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import link.locutus.discord.Locutus;
-import link.locutus.discord.apiv1.enums.Continent;
-import link.locutus.discord.commands.manager.v2.binding.Key;
-import link.locutus.discord.commands.manager.v2.binding.LocalValueStore;
-import link.locutus.discord.commands.manager.v2.binding.SimpleValueStore;
-import link.locutus.discord.commands.manager.v2.binding.ValueStore;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
-import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
+import link.locutus.discord.Logg;
+import link.locutus.discord.commands.manager.v2.binding.*;
+import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.commands.manager.v2.binding.bindings.Placeholders;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PrimitiveBindings;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PrimitiveValidators;
+import link.locutus.discord.commands.manager.v2.binding.bindings.SelectorInfo;
 import link.locutus.discord.commands.manager.v2.binding.validator.ValidatorStore;
 import link.locutus.discord.commands.manager.v2.command.*;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
@@ -34,19 +33,16 @@ import link.locutus.discord.config.yaml.file.YamlConfiguration;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBNation;
-import link.locutus.discord.db.entities.TaxBracket;
 import link.locutus.discord.db.guild.GuildKey;
 import link.locutus.discord.db.guild.GuildSetting;
 import link.locutus.discord.gpt.pw.PWGPTHandler;
-import link.locutus.discord.user.Roles;
 import link.locutus.discord.util.StringMan;
 import link.locutus.discord.util.discord.DiscordUtil;
-import link.locutus.discord.util.math.ReflectionUtil;
+import link.locutus.discord.web.jooby.JteUtil;
 import link.locutus.discord.web.test.TestCommands;
 import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import org.json.JSONObject;
-import retrofit2.http.HEAD;
 
 import javax.annotation.Nullable;
 import java.io.File;
@@ -54,8 +50,6 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.sql.SQLException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -70,11 +64,95 @@ public class CommandManager2 {
     private final PlaceholdersMap placeholders;
     private PWGPTHandler pwgptHandler;
 
+    public JsonObject toJson(ValueStore htmlOptionsStore, PermissionHandler permHandler) {
+        JsonObject cmdJson = commands.toJson(permHandler, false);
+
+        Map<String, JsonObject> keysData = new LinkedHashMap<>();
+        Set<String> checkedOptions = new HashSet<>();
+        Map<String, Object> optionsData = new LinkedHashMap<>();
+
+        Set<Parser> parsers = new LinkedHashSet<>();
+        for (ParametricCallable callable : commands.getParametricCallables(f -> true)) {
+            for (ParameterData param : callable.getUserParameters()) {
+                Parser<?> parser = param.getBinding();
+                Binding binding = parser.getKey().getBinding();
+                if (binding != null && binding.webType().isEmpty()) {
+                    parsers.add(parser);
+                }
+            }
+
+        }
+        for (Parser parser : parsers) {
+            Key key = parser.getKey();
+            JsonObject typeJson = parser.toJson();
+            keysData.put(key.toSimpleString(), typeJson);
+            Key optionsKey = key.append(HtmlOptions.class);
+            Parser optionParser = htmlOptionsStore.get(optionsKey);
+            if (optionParser != null) {
+                WebOption option = (WebOption) optionParser.apply(store, null);
+                optionsData.computeIfAbsent(option.getName(), k -> option.toJson());
+                continue;
+            }
+            List<Class> components = WebOption.getComponentClasses(key.getType());
+            if (components.isEmpty()) {
+                System.out.println("No components for " + key.toSimpleString());
+                continue;
+            }
+            for (Class t : components) {
+                String name = t.getSimpleName();
+                if (!checkedOptions.add(name)) continue;
+                if (t.isEnum()) {
+                    WebOption option = WebOption.fromEnum(t);
+                    optionsData.computeIfAbsent(option.getName(), k -> option.toJson());
+                    continue;
+                }
+                optionsKey = Key.of(t, HtmlOptions.class);
+                optionParser = htmlOptionsStore.get(optionsKey);
+                if (optionParser != null) {
+                    WebOption option = (WebOption) optionParser.apply(htmlOptionsStore, null);
+                    if (!option.getName().equalsIgnoreCase(name)) {
+                        optionsData.put(name, option.getName());
+                    } else {
+                        optionsData.computeIfAbsent(option.getName(), k -> option.toJson());
+                    }
+                } else {
+                    System.out.println("No options for " + name);
+                }
+            }
+        }
+
+        JsonObject phRoot = new JsonObject();
+        for (Class<?> t : placeholders.getTypes()) {
+            Placeholders<?> ph = placeholders.get(t);
+            JsonObject json = new JsonObject();
+
+            JsonObject bindings = ph.getCommands().toJson(permHandler, true);
+            json.add("commands", bindings);
+
+            Set<SelectorInfo> selectors = ph.getSelectorInfo();
+            JsonArray arr = JteUtil.createArrayObj(selectors.stream().map(f -> JteUtil.createArrayObj(f.format(), f.example(), f.desc())));
+            json.add("selectors", arr);
+            Set<String> columns = ph.getSheetColumns();
+            if (!columns.isEmpty()) {
+                json.add("columns", JteUtil.createArrayCol(columns));
+            }
+            phRoot.add(t.getSimpleName(), json);
+        }
+        Gson gson = new Gson();
+        JsonObject result = new JsonObject();
+        result.add("commands", cmdJson);
+        result.add("placeholders", phRoot);
+        result.add("keys", gson.toJsonTree(keysData));
+        result.add("options", gson.toJsonTree(optionsData));
+        return result;
+    }
+
     public CommandManager2() {
         this.store = new SimpleValueStore<>();
         new PrimitiveBindings().register(store);
         new DiscordBindings().register(store);
-        new PWBindings().register(store);
+        PWBindings pwBindings = new PWBindings();
+        pwBindings.register(store);
         new GPTBindings().register(store);
         new SheetBindings().register(store);
 //        new StockBinding().register(store);
@@ -174,28 +252,77 @@ public class CommandManager2 {
     }
 
     public CommandManager2 registerDefaults() {
+//        this.commands.registerMethod(new TestCommands(), List.of("test"), "test", "test");
+        getCommands().registerMethod(new GrantCommands(), List.of("grant"), "costBulk", "cost");
+        getCommands().registerMethod(new StatCommands(), List.of("alliance", "stats"), "militarizationTime", "militarization_time");
+
+        getCommands().registerMethod(new WarCommands(), List.of("sheets_ia"), "ActivitySheetDate", "activity_date");
+        getCommands().registerMethod(new WarCommands(), List.of("sheets_ia"), "WarDecSheetDate", "declares_date");
+        getCommands().registerMethod(new WarCommands(), List.of("sheets_ia"), "DepositSheetDate", "deposits_date");
+
+        getCommands().registerMethod(new AdminCommands(), List.of("admin", "settings"), "unsetNews", "subscribe");
+        getCommands().registerMethod(new AdminCommands(), List.of("admin", "settings"), "unsetKeys", "unset");
+        getCommands().registerMethod(new AdminCommands(), List.of("admin", "settings"), "infoBulk", "info_servers");
+
+        getCommands().registerMethod(new WarCommands(), List.of("alerts", "beige"), "testBeigeAlertAuto", "test_auto");
+        getCommands().registerMethod(new UtilityCommands(), List.of("nation", "history"), "vmHistory", "vm");
+        getCommands().registerMethod(new UtilityCommands(), List.of("nation", "history"), "grayStreak", "gray_streak");
         getCommands().registerMethod(new UtilityCommands(), List.of("tax"), "setBracketBulk", "set_from_sheet");
         getCommands().registerMethod(new StatCommands(), List.of("stats_other", "global_metrics"), "orbisStatByDay", "by_time");
+
+        getCommands().registerMethod(new IACommands(), List.of("channel", "sort"), "sortChannelsSheet", "sheet");
+        getCommands().registerMethod(new IACommands(), List.of("channel", "sort"), "sortChannelsName", "category_filter");
 
         getCommands().registerMethod(new StatCommands(), List.of("alliance", "stats"), "militaryRanking", "militarization");
         getCommands().registerMethod(new StatCommands(), List.of("alliance", "stats"), "listMerges", "merges");
         getCommands().registerMethod(new StatCommands(), List.of("stats_war", "attack_breakdown"), "attackBreakdownSheet", "sheet");
         getCommands().registerMethod(new IACommands(), List.of("interview", "questions"), "viewInterview", "view");
         getCommands().registerMethod(new IACommands(), List.of("interview", "questions"), "setInterview", "set");
+        getCommands().registerMethod(new IACommands(), List.of("interview", "channel"), "renameInterviewChannels", "auto_rename");
+
         getCommands().registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncWars", "wars");
         getCommands().registerMethod(new WarCommands(), List.of("war", "room"), "warRoomList", "list");
+        getCommands().registerMethod(new WarCommands(), List.of("war", "room"), "deletePlanningChannel", "delete_planning");
+        getCommands().registerMethod(new WarCommands(), List.of("war", "room"), "deleteForEnemies", "delete_for_enemies");
         getCommands().registerMethod(new UtilityCommands(), List.of("land"), "landROI", "roi");
         getCommands().registerMethod(new UtilityCommands(), List.of("infra"), "infraROI", "roi");
-        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "syncConflictData", "sync");
-        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "deleteConflict", "delete");
+
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "featured"), "featureConflicts", "add_rule");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "featured"), "removeFeature", "remove_rule");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "featured"), "listFeaturedRuleset", "list_rules");
+
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "info", "info");
         getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "listConflicts", "list");
-        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "setConflictEnd", "end");
-        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "setConflictName", "rename");
-        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "setConflictStart", "start");
+        getCommands().registerMethod(new VirtualConflictCommands(), List.of("conflict"), "createTemporary", "create_temp");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "deleteConflict", "delete");
         getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "addConflict", "create");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "purge"), "purgeFeatured", "featured");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "purge"), "purgeTemporaryConflicts", "user_generated");
+
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "addAnnouncement", "add_forum_post");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setConflictEnd", "end");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setConflictStart", "start");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setConflictName", "rename");
+
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setWiki", "wiki");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setWiki", "wiki");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setStatus", "status");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setCB", "casus_belli");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "edit"), "setCategory", "category");
+
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "syncConflictData", "website");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "importConflictData", "multiple_sources");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "importCtowned", "ctowned");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "importWikiPage", "wiki_page");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "importWikiAll", "wiki_all");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "recalculateGraphs", "recalculate_graphs");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "recalculateTables", "recalculate_tables");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "importAllianceNames", "alliance_names");
+        getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "sync"), "importExternal", "db_file");
+
         getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "alliance"), "removeCoalition", "remove");
         getCommands().registerMethod(new ConflictCommands(), List.of("conflict", "alliance"), "addCoalition", "add");
-        getCommands().registerMethod(new ConflictCommands(), List.of("conflict"), "importConflictData", "clone");
+
 
         getCommands().registerMethod(new AllianceMetricCommands(), List.of("admin", "sync"), "saveMetrics", "saveMetrics");
         getCommands().registerMethod(new AllianceMetricCommands(), List.of("stats_tier"), "metricByGroup", "metric_by_group");
@@ -208,6 +335,17 @@ public class CommandManager2 {
 
         getCommands().registerMethod(new UtilityCommands(), List.of("announcement"), "addWatermark", "watermark");
         getCommands().registerMethod(new WarCommands(), List.of("war", "sheet"), "raidSheet", "raid");
+
+        GrantCommands grants = new GrantCommands();
+        getCommands().registerMethod(grants, List.of("grant"), "grantCity", "city");
+        getCommands().registerMethod(grants, List.of("grant"), "grantProject", "project");
+        getCommands().registerMethod(grants, List.of("grant"), "grantInfra", "infra");
+        getCommands().registerMethod(grants, List.of("grant"), "grantLand", "land");
+        getCommands().registerMethod(grants, List.of("grant"), "grantUnit", "unit");
+        getCommands().registerMethod(grants, List.of("grant"), "grantMMR", "mmr");
+        getCommands().registerMethod(grants, List.of("grant"), "grantConsumption", "consumption");
+        getCommands().registerMethod(grants, List.of("grant"), "grantBuild", "build");
+        getCommands().registerMethod(grants, List.of("grant"), "grantWarchest", "warchest");
 
         NewsletterCommands newsletter = new NewsletterCommands();
         getCommands().registerMethod(newsletter, List.of("newsletter"), "create", "create");
@@ -281,6 +419,8 @@ public class CommandManager2 {
         this.commands.registerMethod(new BankCommands(), List.of("escrow"), "escrowSheetCmd", "view_sheet");
 
         this.commands.registerMethod(new IACommands(), List.of("nation", "list"), "viewBans", "bans");
+        this.commands.registerMethod(new IACommands(), List.of("mail"), "readMail", "read");
+        this.commands.registerMethod(new IACommands(), List.of("mail"), "searchMail", "search");
 
         this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "importLinkedBans", "multi_bans");
 
@@ -295,13 +435,94 @@ public class CommandManager2 {
         this.commands.registerMethod(new EmbedCommands(), List.of("embed", "add"), "addButton", "command");
         this.commands.registerMethod(new EmbedCommands(), List.of("embed", "add"), "addModal", "modal");
         this.commands.registerMethod(new EmbedCommands(), List.of("embed", "add"), "addButtonRaw", "raw");
+        this.commands.registerMethod(new EmbedCommands(), List.of("embed", "rename"), "renameButton", "button");
+
+        // Exception in thread "main" java.lang.IllegalStateException: Missing methods for IACommands:
+        // - /interviewSheet
+        this.commands.registerMethod(new IACommands(), List.of("interview"), "interviewSheet", "sheet");
+        //
+        //See example in CommandManager2#registerDefaultsMissing methods for UnsortedCommands:
+        // - prolificOffshores
+        this.commands.registerMethod(new UnsortedCommands(), List.of("offshore", "list"), "prolificOffshores", "prolific");
+        this.commands.registerMethod(new UtilityCommands(), List.of("offshore", "list"), "listOffshores", "all");
+        this.commands.registerMethod(new UtilityCommands(), List.of("offshore", "find"), "findOffshore", "for_coalition");
+        this.commands.registerMethod(new UtilityCommands(), List.of("offshore", "find"), "findOffshores", "for_enemies");
+        //
+        //See example in CommandManager2#registerDefaultsMissing methods for TradeCommands:
+        // - unsubTrade
+        // - tradeSubs
+        this.commands.registerMethod(new TradeCommands(), List.of("alerts", "trade"), "unsubTrade", "unsubscribe");
+        this.commands.registerMethod(new TradeCommands(), List.of("alerts", "trade"), "tradeSubs", "list");
+        //
+        //See example in CommandManager2#registerDefaultsMissing methods for AdminCommands:
+        // - syncBounties
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncBounties", "bounties");
+        // - purgeWarRooms
+        this.commands.registerMethod(new AdminCommands(), List.of("war", "room"), "purgeWarRooms", "purge");
+        // - syncForumProfiles
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncForumProfiles", "forum_profiles");
+        // - syncTreaties
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncTreaties", "treaties");
+        // - syncAttacks
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncAttacks", "attacks");
+        // - syncOffshore
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncOffshore", "offshore");
+        // - runMultiple
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "command"), "runMultiple", "multiple");
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "command"), "runForNations", "format_for_nations");
+        // - sudoNations
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sudo"), "sudoNations", "nations");
+        // - sudo
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sudo"), "sudo", "user");
+        // - nationMeta
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "debug"), "nationMeta", "nation_meta");
+        // - tradeId
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "debug"), "tradeId", "trade_id");
+        // - syncTrade
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync"), "syncTrade", "trade");
+        // - syncUid
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync2"), "syncUid", "uid");
+        // - syncMail
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync2"), "syncMail", "mail");
+        // - syncTaxes
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "sync2"), "syncTaxes", "taxes");
+        // - guildInfo
+        this.commands.registerMethod(new AdminCommands(), List.of("admin", "debug"), "guildInfo", "guild");
+        //
+        //See example in CommandManager2#registerDefaultsMissing methods for FACommands:
+        // - generateCoalitionSheet
+        this.commands.registerMethod(new FACommands(), List.of("coalition"), "generateCoalitionSheet", "sheet");
+        //
+        //See example in CommandManager2#registerDefaultsMissing methods for PlayerSettingCommands:
+        // - bankAlertList
+        // - bankAlertUnsubscribe
+        // - bankAlert
+        this.commands.registerMethod(new PlayerSettingCommands(), List.of("alerts", "bounty"), "bountyAlertOptOut", "opt_out");
+        this.commands.registerMethod(new PlayerSettingCommands(), List.of("alerts", "bank"), "bankAlertList", "list");
+        this.commands.registerMethod(new PlayerSettingCommands(), List.of("alerts", "bank"), "bankAlertUnsubscribe", "unsubscribe");
+        this.commands.registerMethod(new PlayerSettingCommands(), List.of("alerts", "bank"), "bankAlert", "subscribe");
+        //
+        //See example in CommandManager2#registerDefaultsMissing methods for StatCommands:
+        // - allianceByLoot
+        // - warCostsByDay
+        // - warsCostRankingByDay
+        // - attackTypeRanking
+        // - attackTypeBreakdownAB
+        this.commands.registerMethod(new StatCommands(), List.of("alliance", "stats"), "allianceAttributeRanking", "attribute_ranking");
+        this.commands.registerMethod(new StatCommands(), List.of("alliance", "stats"), "allianceByLoot", "loot_ranking");
+        this.commands.registerMethod(new StatCommands(), List.of("stats_war", "by_day"), "warCostsByDay", "warcost_versus");
+        this.commands.registerMethod(new StatCommands(), List.of("stats_war", "by_day"), "warsCostRankingByDay", "warcost_global");
+        this.commands.registerMethod(new StatCommands(), List.of("stats_war"), "attackTypeRanking", "attack_ranking");
+        this.commands.registerMethod(new StatCommands(), List.of("stats_war", "attack_breakdown"), "attackTypeBreakdownAB", "versus");
 
         for (GuildSetting setting : GuildKey.values()) {
             List<String> path = List.of("settings_" + setting.getCategory().name().toLowerCase(Locale.ROOT));
 
-            Method[] methods = setting.getClass().getDeclaredMethods();
+            Class<? extends GuildSetting> settingClass = setting.getClass();
+            Method[] methods = settingClass.getMethods();
             Map<String, String> methodNameToCommandName = new HashMap<>();
             for (Method method : methods) {
+                if (method.getDeclaringClass() != settingClass) continue;
                 if (method.getAnnotation(Command.class) != null) {
                     Command command = method.getAnnotation(Command.class);
 
@@ -395,7 +616,9 @@ public class CommandManager2 {
 
             Method methodAlias = null;
             Method methodColumns = null;
-            for (Method method : ph.getClass().getDeclaredMethods()) {
+            Class<? extends Placeholders> phClass = ph.getClass();
+            for (Method method : phClass.getMethods()) {
+                if (method.getDeclaringClass() != phClass) continue;
                 if (method.getName().equals("addSelectionAlias")) {
                     methodAlias = method;
                 } else if (method.getName().equals("addColumns")) {
@@ -411,7 +634,6 @@ public class CommandManager2 {
                 continue;
             }
             String typeName = PlaceholdersMap.getClassName(ph.getType());
-            System.out.println("Registering " + typeName);
             this.commands.registerMethod(ph, List.of("selection_alias", "add"), methodAlias.getName(), typeName);
             this.commands.registerMethod(ph, List.of("sheet_template", "add"), methodColumns.getName(), typeName);
 //            for (Method method : ph.getClass().getDeclaredMethods()) {
@@ -492,7 +714,6 @@ public class CommandManager2 {
         if (!fullCmdStr.isEmpty() && Locutus.cmd().isModernPrefix(fullCmdStr.charAt(0))) {
             fullCmdStr = fullCmdStr.substring(1);
         }
-        System.out.println("remove:|| full " + fullCmdStr);
         Message message = null;
         MessageChannel channel = null;
         if (io instanceof DiscordChannelIO dio) {
@@ -502,7 +723,7 @@ public class CommandManager2 {
         run(guild, channel, author, message, io, fullCmdStr, async, returnNotFound);
     }
 
-    private LocalValueStore createLocals(@Nullable LocalValueStore<Object> existingLocals, @Nullable Guild guild, @Nullable MessageChannel channel, @Nullable User user, @Nullable Message message, IMessageIO io, @Nullable Map<String, String> fullCmdStr) {
+    public LocalValueStore createLocals(@Nullable LocalValueStore<Object> existingLocals, @Nullable Guild guild, @Nullable MessageChannel channel, @Nullable User user, @Nullable Message message, IMessageIO io, @Nullable Map<String, String> fullCmdStr) {
         if (guild != null) {
             String denyReason = Settings.INSTANCE.MODERATION.BANNED_GUILDS.get(guild.getIdLong());
             if (denyReason != null) {
@@ -605,22 +826,25 @@ public class CommandManager2 {
                 }
                 StringBuilder remaining = new StringBuilder();
                 CommandCallable callable = commands.getCallable(fullCmdStr, remaining);
-                if (callable instanceof CommandGroup group && !remaining.isEmpty()) {
+                if (callable instanceof CommandGroup group) {
                     if (returnNotFound) {
-                        String commandId = fullCmdStr.replace(remaining.toString(), "");
-                        if (commandId.isEmpty()) {
-                            commandId = fullCmdStr.split(" ")[0];
-                        }
-                        // last string in split by space
-                        String[] lastCommandIdSplit = commandId.split(" ");
-                        String lastCommandId = lastCommandIdSplit[lastCommandIdSplit.length - 1];
-                        List<String> validIds = new ArrayList<>(group.primarySubCommandIds());
-                        List<String> closest = StringMan.getClosest(lastCommandId, validIds, false);
-                        if (closest.size() > 5) closest = closest.subList(0, 5);
+                        String prefix = group.getFullPath();
+                        prefix = "/" + prefix + (prefix.isEmpty() ? "" : " ");
+                        if (!remaining.isEmpty()) {
+                            String[] lastCommandIdSplit = remaining.toString().split(" ");
+                            String lastCommandId = lastCommandIdSplit[0];
+                            List<String> validIds = new ArrayList<>(group.primarySubCommandIds());
+                            List<String> closest = StringMan.getClosest(lastCommandId, validIds, false);
+                            if (closest.size() > 5) closest = closest.subList(0, 5);
 
-                        io.send("No command found for `" + commandId + "`\n" +
-                                "Did you mean:\n- " + group.getFullPath() + StringMan.join(closest, "\n- " + group.getFullPath()) +
-                                "\n\nSee also: " + CM.help.find_command.cmd.toSlashMention());
+                            io.send("No subcommand found for `" + lastCommandId + "`\n" +
+                                    "Did you mean:\n- `" + prefix + StringMan.join(closest, "`\n- `" + prefix) +
+                                    "`\n\nSee also: " + CM.help.find_command.cmd.toSlashMention());
+                        } else {
+                            Set<String> options = group.primarySubCommandIds();
+                            io.send("No subcommand found for `" + prefix.trim() + "`. Options:\n" +
+                                    "`" + prefix + StringMan.join(options, "`\n`" + prefix) + "`");
+                        }
                     }
                     return;
                 }
@@ -735,7 +959,6 @@ public class CommandManager2 {
                     io.create().append(result.toString()).send();
                 }
             } catch (CommandUsageException e) {
-                System.out.println("Had usage exception");
                 Throwable root = e;
                 while (root.getCause() != null && root.getCause() != root) {
                     root = root.getCause();

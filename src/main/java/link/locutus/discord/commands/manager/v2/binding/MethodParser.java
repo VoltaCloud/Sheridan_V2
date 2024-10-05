@@ -1,7 +1,11 @@
 package link.locutus.discord.commands.manager.v2.binding;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.google.gson.internal.Primitives;
 import io.javalin.http.RedirectResponse;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import link.locutus.discord.Logg;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Binding;
 import link.locutus.discord.commands.manager.v2.command.ArgumentStack;
 import link.locutus.discord.db.entities.DBNation;
@@ -13,8 +17,11 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import static com.google.api.client.util.Preconditions.checkNotNull;
 
 public class MethodParser<T> implements Parser<T> {
     private final String desc;
@@ -27,16 +34,12 @@ public class MethodParser<T> implements Parser<T> {
     private boolean isConsumerInit;
     private boolean isConsumer;
 
-    public MethodParser(Object object, Method method, String desc) {
-        this(object, method, desc, null, null);
-    }
-
     public MethodParser(Object object, Method method, String desc, Binding binding, Type ret) {
+        checkNotNull(binding);
         this.object = object;
         this.method = method;
         Annotation[] annotations = method.getAnnotations();
         if (ret == null) ret = method.getGenericReturnType();
-
         if (annotations.length == 1) {
             key = Key.of(binding, ret);
         } else if (annotations.length == 2) {
@@ -44,14 +47,12 @@ public class MethodParser<T> implements Parser<T> {
             key = Key.of(binding, ret, annotation);
         } else {
             key = Key.of(binding, ret, annotations);
-//            throw new IllegalArgumentException("Cannot annotate " + method + " with " + StringMan.getString(annotations));
         }
 
-        // Get the provided parameters
         Type[] paramTypes = method.getGenericParameterTypes();
         Annotation[][] paramAnns = method.getParameterAnnotations();
 
-        this.params = new ArrayList<>();
+        this.params = new ObjectArrayList<>(paramTypes.length);
 
         this.isConsumer = false;
         for (int i = 0; i < paramTypes.length; i++) {
@@ -72,9 +73,7 @@ public class MethodParser<T> implements Parser<T> {
                 isConsumer = true;
             }
         }
-
         this.primaryClass = params.stream().map(f -> f == null ? null : ReflectionUtil.getClassType(f.getType())).collect(Collectors.toList());
-
         this.isConsumerInit = isConsumer;
         this.desc = desc == null && binding != null ? binding.value() : desc;
     }
@@ -137,10 +136,8 @@ public class MethodParser<T> implements Parser<T> {
                     }
                 } catch (IllegalStateException | RedirectResponse e) {
                     if (!paramKey.isDefault()) {
-                        System.out.println("Failed to apply " + paramKey + " to " + method.getDeclaringClass().getSimpleName() + "#" + method.getName());
+                        Logg.text("Failed to apply " + paramKey + " to " + method.getDeclaringClass().getSimpleName() + "#" + method.getName());
                         throw e;
-                    } else {
-                        System.out.println("Option is default " + paramKey + " to " + method.getDeclaringClass().getSimpleName() + "#" + method.getName() + " | " + e.getMessage());
                     }
                     arg = null;
                 }
@@ -151,7 +148,6 @@ public class MethodParser<T> implements Parser<T> {
             if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
                 throw (RuntimeException) e.getCause();
             }
-            System.out.println("Failed to apply 2 " + method.getDeclaringClass().getSimpleName() + "#" + method.getName());
             throw new RuntimeException(e);
         }
     }
@@ -206,7 +202,7 @@ public class MethodParser<T> implements Parser<T> {
                 }
                 Parser child = store.get(dependency);
                 if (child == null) {
-                    System.out.println("Check consumer " + StringMan.getString(getKey()) + " | " + dependency);
+                    Logg.text("Check consumer " + StringMan.getString(getKey()) + " | " + dependency);
                 }
                 if (child.isConsumer(store)) {
                     isConsumer = true;
@@ -225,5 +221,19 @@ public class MethodParser<T> implements Parser<T> {
     @Override
     public String getDescription() {
         return desc;
+    }
+
+    @Override
+    public JsonObject toJson() {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("desc", desc);
+        Binding binding = getKey().getBinding();
+        String[] examples = binding.examples();
+        if (examples != null && examples.length > 0) {
+            JsonArray array = new JsonArray();
+            for (String example : examples) array.add(example);
+            obj.add("examples", array);
+        }
+        return obj;
     }
 }

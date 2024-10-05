@@ -83,6 +83,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static link.locutus.discord.util.MathMan.parseFilter;
 import static link.locutus.discord.util.MathMan.parseStringFilter;
@@ -311,7 +312,6 @@ public class DiscordUtil {
 
     public static void paginate(IMessageIO io, String title, String command, Integer page, int perPage, List<String> results, String footer, boolean inline) {
         if (results.isEmpty()) {
-            System.out.println("Results are empty");
             return;
         }
 
@@ -489,7 +489,6 @@ public class DiscordUtil {
 
     private static List<CommandInfo> parseCommands(Guild guild, String label, String id, Map<String, String> reactions, String ref) {
         if (id == null) {
-            System.out.println("ID is null");
             return null;
         }
         if (id.isBlank()) {
@@ -507,11 +506,13 @@ public class DiscordUtil {
             id = cmd;
         }
 
-        Long channelId = null;
+        Long channelId;
         if (id.startsWith("<#")) {
             String channelIdStr = id.substring(0, id.indexOf('>') + 1);
             channelId = DiscordUtil.getChannelId(guild, channelIdStr);
             id = id.substring(id.indexOf(' ') + 1);
+        } else {
+            channelId = null;
         }
 
         CommandBehavior behavior = null;
@@ -533,7 +534,14 @@ public class DiscordUtil {
             }
             return infos;
         } else if (id.startsWith("{")){
-            return List.of(new CommandInfo(channelId, behavior, id));
+            List<String> split;
+            if (id.contains("\n{")) {
+                split = Arrays.asList(id.split("\\r?\\n(?=\\{)"));
+            } else {
+                split = List.of(id);
+            }
+            CommandBehavior finalBehavior = behavior;
+            return split.stream().map(cmd -> new CommandInfo(channelId, finalBehavior, cmd)).toList();
         } else if (!id.isEmpty()) {
             throw new IllegalArgumentException("Unknown command (5): `" + id + "`");
         } else {
@@ -794,7 +802,8 @@ public class DiscordUtil {
     }
 
     public static DBNation parseNation(String arg, boolean allowDeleted, boolean useLeader) {
-        if (arg.toLowerCase().contains("/alliance/") || arg.toLowerCase().startsWith("aa:") || arg.toLowerCase().startsWith("alliance:")) return null;
+        String argLower = arg.toLowerCase();
+        if (argLower.contains("/alliance/") || argLower.startsWith("aa:") || argLower.startsWith("alliance:")) return null;
         if (arg.startsWith("leader:")) {
             arg = arg.substring(7);
             useLeader = true;
@@ -826,6 +835,7 @@ public class DiscordUtil {
 
     public static Integer parseNationId(String arg) {
         if (arg.isEmpty()) return null;
+        boolean checkUser = false;
         if (arg.charAt(0) == '"' && arg.charAt(arg.length() - 1) == '"') {
             arg = arg.substring(1, arg.length() - 1);
         }
@@ -833,12 +843,14 @@ public class DiscordUtil {
             arg = arg.substring(1, arg.length() - 1);
         }
         if (arg.toLowerCase().startsWith("nation:")) arg = arg.substring(7);
+
         if (arg.contains("/nation/id=") || arg.contains("politicsandwar.com/nation/war/declare/id=") || arg.contains("politicsandwar.com/nation/espionage/eid=")) {
             String[] split = arg.split("=");
             if (split.length == 2) {
                 arg = split[1].replaceAll("/", "");
             }
         } else if (arg.charAt(0) == '@') {
+            checkUser = true;
             String idStr = arg.substring(1);
             if (idStr.charAt(0) == '!') idStr = idStr.substring(1);
             if (MathMan.isInteger(idStr)) {
@@ -870,8 +882,8 @@ public class DiscordUtil {
         if (user != null) {
             return user.getNationId();
         }
-        List<User> discordUsers = Locutus.imp().getDiscordApi().getUsersByName(arg, true);
-        User discordUser = !discordUsers.isEmpty() ? discordUsers.get(0) : null;
+        List<User> discordUsers = checkUser ? Locutus.imp().getDiscordApi().getUsersByName(arg, true) : null;
+        User discordUser = discordUsers != null && !discordUsers.isEmpty() ? discordUsers.get(0) : null;
         if (discordUser != null) {
             nation = DiscordUtil.getNation(discordUser);
             if (nation != null) return nation.getId();
@@ -983,10 +995,10 @@ public class DiscordUtil {
         return null;
     }
 
-    public static CompletableFuture<Message> sendMessage(MessageChannel channel, String message) {
+    public static CompletableFuture<List<Message>> sendMessage(MessageChannel channel, String message) {
         if (message.length() > 20000) {
             if (message.length() < 200000) {
-                return DiscordUtil.upload(channel, "message.txt", message);
+                return DiscordUtil.upload(channel, "message.txt", message).thenApply(List::of);
             }
             new Exception().printStackTrace();
             throw new IllegalArgumentException("Cannot send message of this length: " + message.length());
@@ -997,25 +1009,33 @@ public class DiscordUtil {
         if (message.contains("@here")) {
             message = message.replace("@here", "");
         }
-        message = WordUtils.wrap(message, 2000, "\n", true, ",");
         if (message.length() > 2000) {
+            message = WordUtils.wrap(message, 2000, "\n", true, "[,\n ]");
             String[] lines = message.split("\\r?\\n");
+            List<CompletableFuture<Message>> futures = new ArrayList<>();
             StringBuilder buffer = new StringBuilder();
             for (String line : lines) {
                 if (buffer.length() + 1 + line.length() > 2000) {
                     String str = buffer.toString().trim();
                     if (!str.isEmpty()) {
-                        RateLimitUtil.complete(channel.sendMessage(str));
+                        futures.add(RateLimitUtil.queue(channel.sendMessage(str)));
                     }
                     buffer.setLength(0);
                 }
                 buffer.append('\n').append(line);
             }
             if (buffer.length() != 0) {
-                return RateLimitUtil.queue(channel.sendMessage(buffer));
+                String str = buffer.toString().trim();
+                if (!str.isEmpty()) {
+                    futures.add(RateLimitUtil.queue(channel.sendMessage(str)));
+                }
             }
+            return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .thenApply(v -> futures.stream()
+                            .map(CompletableFuture::join)
+                            .collect(Collectors.toList()));
         } else if (!message.isEmpty()) {
-            return RateLimitUtil.queue(channel.sendMessage(message));
+            return RateLimitUtil.queue(channel.sendMessage(message)).thenApply(List::of);
         }
         return null;
     }
@@ -1066,7 +1086,8 @@ public class DiscordUtil {
             if (nation.getVm_turns() != 0 || nation.isBeige()) return true;
             if (nation.active_m() < 10000) {
                 int twoWeeks = 14 * 12;
-                Activity activity = new Activity(nation.getNation_id(), twoWeeks);
+                long turnNow = TimeUtil.getTurn();
+                Activity activity = new Activity(nation.getNation_id(), turnNow - twoWeeks, Long.MAX_VALUE);
                 double chance = activity.loginChance(finalInactiveTurns, true);
                 return chance > activeProbability;
             }
@@ -1087,6 +1108,8 @@ public class DiscordUtil {
 
             if (aaName.startsWith("~") && allowCoalitions) {
                 aaName = aaName.substring(1);
+            } else if (aaName.startsWith("coalition:") && allowCoalitions) {
+                aaName = aaName.substring(10);
             } else {
                 aaId = PW.parseAllianceId(aaName);
             }

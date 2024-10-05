@@ -4,7 +4,7 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.v2.binding.WebStore;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
-import link.locutus.discord.commands.war.WarCategory;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePermission;
@@ -178,7 +178,7 @@ public class WarPages {
             return TimeUtil.secToTime(TimeUnit.MINUTES, f.getNation(false).active_m());
         });
         table.addColumn("actions", false, false, f -> {
-            String cmd = CM.war.counter.auto.cmd.create(f.getAttacker_id() + "", null, null, null, null, null).toCommandArgs();
+            String cmd = CM.war.counter.auto.cmd.enemy(f.getAttacker_id() + "").toCommandArgs();
             String button = "<button cmd=\"" + cmd + "\" type=\"button\" class=\"btn-sm btn-primary\">Autocounter</button>";
             return button;
         });

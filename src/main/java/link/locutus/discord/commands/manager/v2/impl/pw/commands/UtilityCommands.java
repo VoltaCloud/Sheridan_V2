@@ -2,12 +2,15 @@ package link.locutus.discord.commands.manager.v2.impl.pw.commands;
 
 import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.enums.Continent;
 import link.locutus.discord.apiv1.enums.DomesticPolicy;
 import link.locutus.discord.apiv1.enums.NationColor;
 import link.locutus.discord.apiv1.enums.city.building.Building;
 import link.locutus.discord.apiv1.enums.city.building.Buildings;
+import link.locutus.discord.apiv3.csv.DataDumpParser;
+import link.locutus.discord.apiv3.csv.header.NationHeader;
 import link.locutus.discord.apiv3.enums.NationLootType;
 import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.commands.manager.v2.binding.annotation.TextArea;
@@ -18,16 +21,15 @@ import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.IsAlliance;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePermission;
-import link.locutus.discord.commands.manager.v2.impl.discord.permission.WhitelistPermission;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.NationAttributeDouble;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.PWBindings;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.AlliancePlaceholders;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.NationPlaceholders;
-import link.locutus.discord.commands.rankings.builder.GroupedRankBuilder;
-import link.locutus.discord.commands.rankings.builder.RankBuilder;
-import link.locutus.discord.commands.rankings.builder.SummedMapRankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.GroupedRankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.RankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.SummedMapRankBuilder;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.*;
@@ -71,13 +73,14 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
+import java.text.ParseException;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -262,7 +265,6 @@ public class UtilityCommands {
     @RolePermission(Roles.ECON)
     public String findOffshore(@Me IMessageIO channel, @Me JSONObject command, DBAlliance alliance, @Default @Timestamp Long cutoffMs) {
         if (cutoffMs == null) cutoffMs = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(200);
-        Map<Integer, DBNation> nations = Locutus.imp().getNationDB().getNations();
 
         List<Transaction2> transactions = Locutus.imp().getBankDB().getToNationTransactions(cutoffMs);
         long now = System.currentTimeMillis();
@@ -293,108 +295,107 @@ public class UtilityCommands {
         return null;
     }
 
-    @Command(desc = "See who was online at the time of a spy op (UTC)")
-    @RolePermission(Roles.MEMBER)
-    @WhitelistPermission
-    public String findSpyOp(@Me DBNation me, String times, int defenderSpies, @Default DBNation defender) {
-        if (defender == null) defender = me;
-
-        Set<Integer> ids = new HashSet<>();
-        Map<DBSpyUpdate, Long> updatesTmp = new HashMap<>();
-        long interval = TimeUnit.MINUTES.toMillis(3);
-
-        for (String timeStr : times.split(",")) {
-            long timestamp = TimeUtil.parseDate(TimeUtil.MMDD_HH_MM_A, timeStr, true);
-            List<DBSpyUpdate> updates = Locutus.imp().getNationDB().getSpyActivity(timestamp, interval);
-            for (DBSpyUpdate update : updates) {
-//                nations.put(update.nation_id, nations.getOrDefault(update.nation_id, 0) + 1);
-                DBNation nation = DBNation.getById(update.nation_id);
-                if (nation == null) continue;
-                if (!defender.isInSpyRange(nation)) continue;
-
-                if (ids.contains(update.nation_id)) continue;
-                ids.add(update.nation_id);
-                updatesTmp.put(update, Math.abs(timestamp - update.timestamp));
-
-            }
-        }
-
-        if (updatesTmp.isEmpty()) return "No results (0)";
-
-        Map<DBNation, Map.Entry<Double, String>> allOdds = new HashMap<>();
-
-        for (Map.Entry<DBSpyUpdate, Long> entry : updatesTmp.entrySet()) {
-            DBSpyUpdate update = entry.getKey();
-            long diff = entry.getValue();
-//            if (update.spies <= 0) continue;
-//            if (update.change == 0) continue;
-
-            DBNation attacker = Locutus.imp().getNationDB().getNation(update.nation_id);
-            if (attacker == null || (defender != null && !attacker.isInSpyRange(defender)) || attacker.getNation_id() == defender.getNation_id()) continue;
-
-            int spiesUsed = update.spies;
-
-
-            int safety = 3;
-            int uncertainty = -1;
-            boolean foundOp = false;
-            boolean spySatellite = Projects.SPY_SATELLITE.hasBit(update.projects);
-            boolean intelligence = Projects.INTELLIGENCE_AGENCY.hasBit(update.projects);
-
-            if (spiesUsed == -1) spiesUsed = attacker.getSpies();
-
-            double odds = SpyCount.getOdds(spiesUsed, defenderSpies, safety, SpyCount.Operation.SPIES, defender);
-            if (spySatellite) odds = Math.min(100, odds * 1.2);
-//            if (odds < 10) continue;
-
-            double ratio = odds;
-
-            int numOps = (int) Math.ceil((double) spiesUsed / attacker.getSpies());
-
-            if (!foundOp) {
-                ratio -= ratio * 0.1 * Math.abs((double) diff / interval);
-
-                ratio *= 0.1;
-
-                if (attacker.getPosition() <= 1) ratio *= 0.1;
-            } else {
-                ratio -= 0.1 * ratio * uncertainty;
-
-                if (attacker.getPosition() <= 1) ratio *= 0.5;
-            }
-
-            StringBuilder message = new StringBuilder();
-
-            if (foundOp) message.append("**");
-            message.append(MathMan.format(odds) + "%");
-            if (spySatellite) message.append(" | SAT");
-            if (intelligence) message.append(" | IA");
-            message.append(" | " + spiesUsed + "? spies (" + safety + ")");
-            long diff_m = Math.abs(diff / TimeUnit.MINUTES.toMillis(1));
-            message.append(" | " + diff_m + "m");
-            if (foundOp) message.append("**");
-
-            allOdds.put(attacker, new AbstractMap.SimpleEntry<>(ratio, message.toString()));
-        }
-
-        List<Map.Entry<DBNation, Map.Entry<Double, String>>> sorted = new ArrayList<>(allOdds.entrySet());
-        sorted.sort((o1, o2) -> Double.compare(o2.getValue().getKey(), o1.getValue().getKey()));
-
-        if (sorted.isEmpty()) {
-            return "No results";
-        }
-
-        StringBuilder response = new StringBuilder();
-        for (Map.Entry<DBNation, Map.Entry<Double, String>> entry : sorted) {
-            DBNation att = entry.getKey();
-
-            response.append(att.getNation() + " | " + att.getAllianceName() + "\n");
-            response.append(entry.getValue().getValue()).append("\n\n");
-        }
-
-        return response.toString();
-
-    }
+//    @Command(desc = "See who was online at the time of a spy op (UTC)")
+//    @RolePermission(Roles.MEMBER)
+//    @WhitelistPermission
+//    public String findSpyOp(@Me DBNation me, String times, int defenderSpies, @Default DBNation defender) {
+//        if (defender == null) defender = me;
+//
+//        Set<Integer> ids = new HashSet<>();
+//        Map<DBSpyUpdate, Long> updatesTmp = new HashMap<>();
+//        long interval = TimeUnit.MINUTES.toMillis(3);
+//
+//        for (String timeStr : times.split(",")) {
+//            long timestamp = TimeUtil.parseDate(TimeUtil.MMDD_HH_MM_A, timeStr, true);
+//            List<DBSpyUpdate> updates = Locutus.imp().getNationDB().getSpyActivity(timestamp, interval);
+//            for (DBSpyUpdate update : updates) {
+////                nations.put(update.nation_id, nations.getOrDefault(update.nation_id, 0) + 1);
+//                DBNation nation = DBNation.getById(update.nation_id);
+//                if (nation == null) continue;
+//                if (!defender.isInSpyRange(nation)) continue;
+//
+//                if (ids.contains(update.nation_id)) continue;
+//                ids.add(update.nation_id);
+//                updatesTmp.put(update, Math.abs(timestamp - update.timestamp));
+//
+//            }
+//        }
+//
+//        if (updatesTmp.isEmpty()) return "No results (0)";
+//
+//        Map<DBNation, Map.Entry<Double, String>> allOdds = new HashMap<>();
+//
+//        for (Map.Entry<DBSpyUpdate, Long> entry : updatesTmp.entrySet()) {
+//            DBSpyUpdate update = entry.getKey();
+//            long diff = entry.getValue();
+////            if (update.spies <= 0) continue;
+////            if (update.change == 0) continue;
+//
+//            DBNation attacker = Locutus.imp().getNationDB().getNation(update.nation_id);
+//            if (attacker == null || (defender != null && !attacker.isInSpyRange(defender)) || attacker.getNation_id() == defender.getNation_id()) continue;
+//
+//            int spiesUsed = update.spies;
+//
+//
+//            int safety = 3;
+//            int uncertainty = -1;
+//            boolean foundOp = false;
+//            boolean spySatellite = Projects.SPY_SATELLITE.hasBit(update.projects);
+//            boolean intelligence = Projects.INTELLIGENCE_AGENCY.hasBit(update.projects);
+//
+//            if (spiesUsed == -1) spiesUsed = attacker.getSpies();
+//
+//            double odds = SpyCount.getOdds(spiesUsed, defenderSpies, safety, SpyCount.Operation.SPIES, defender);
+//            if (spySatellite) odds = Math.min(100, odds * 1.2);
+////            if (odds < 10) continue;
+//
+//            double ratio = odds;
+//
+//            int numOps = (int) Math.ceil((double) spiesUsed / attacker.getSpies());
+//
+//            if (!foundOp) {
+//                ratio -= ratio * 0.1 * Math.abs((double) diff / interval);
+//
+//                ratio *= 0.1;
+//
+//                if (attacker.getPosition() <= 1) ratio *= 0.1;
+//            } else {
+//                ratio -= 0.1 * ratio * uncertainty;
+//
+//                if (attacker.getPosition() <= 1) ratio *= 0.5;
+//            }
+//
+//            StringBuilder message = new StringBuilder();
+//
+//            if (foundOp) message.append("**");
+//            message.append(MathMan.format(odds) + "%");
+//            if (spySatellite) message.append(" | SAT");
+//            if (intelligence) message.append(" | IA");
+//            message.append(" | " + spiesUsed + "? spies (" + safety + ")");
+//            long diff_m = Math.abs(diff / TimeUnit.MINUTES.toMillis(1));
+//            message.append(" | " + diff_m + "m");
+//            if (foundOp) message.append("**");
+//
+//            allOdds.put(attacker, new AbstractMap.SimpleEntry<>(ratio, message.toString()));
+//        }
+//
+//        List<Map.Entry<DBNation, Map.Entry<Double, String>>> sorted = new ArrayList<>(allOdds.entrySet());
+//        sorted.sort((o1, o2) -> Double.compare(o2.getValue().getKey(), o1.getValue().getKey()));
+//
+//        if (sorted.isEmpty()) {
+//            return "No results";
+//        }
+//
+//        StringBuilder response = new StringBuilder();
+//        for (Map.Entry<DBNation, Map.Entry<Double, String>> entry : sorted) {
+//            DBNation att = entry.getKey();
+//
+//            response.append(att.getNation() + " | " + att.getAllianceName() + "\n");
+//            response.append(entry.getValue().getValue()).append("\n\n");
+//        }
+//
+//        return response.toString();
+//    }
 
     @Command
     @RolePermission(value = {Roles.ADMIN}, root = true)
@@ -509,7 +510,8 @@ public class UtilityCommands {
         return response.toString();
     }
 
-    @Command(desc = "Mark an alliance as the offshore of another")
+    @Command(desc = "Mark an alliance as the offshore of another\n" +
+            "This is solely for informational purposes such as when displaying an alliance's info or militarization")
     public String markAsOffshore(@Me User author, @Me DBNation me, DBAlliance offshore, DBAlliance parent) {
         if (!Roles.ADMIN.hasOnRoot(author)) {
             DBAlliance expectedParent = offshore.findParentOfThisOffshore();
@@ -540,7 +542,6 @@ public class UtilityCommands {
         Set<Integer> enemies = enemiesList.stream().map(f -> f.getAlliance_id()).collect(Collectors.toSet());
         Set<Integer> allies = alliesList.stream().map(f -> f.getAlliance_id()).collect(Collectors.toSet());
 
-        long start1 = System.currentTimeMillis();
         Map<Integer, List<AllianceChange>> removes = Locutus.imp().getNationDB().getRemovesByAlliances(enemies, cutoff);
         Map<Integer, Set<AllianceChange>> removesByNation = removes.entrySet().stream().flatMap(f -> f.getValue().stream()).collect(Collectors.groupingBy(AllianceChange::getNationId, Collectors.toSet()));
 
@@ -549,8 +550,6 @@ public class UtilityCommands {
         Map<Integer, Integer> offshoresOfficer = new HashMap<>();
         Map<Integer, Integer> offshoresMember = new HashMap<>();
         Map<Integer, Map.Entry<Integer, Map.Entry<Integer, Double>>> offshoresTransfers = new HashMap<>(); // Ofshore AA id -> (parent AA id, num transfers, value transferred)
-
-        long totalBankDiff = 0;
 
         Map<Integer, List<DBNation>> alliances = Locutus.imp().getNationDB().getNationsByAlliance(false, false, true, true, true);
         outer:
@@ -578,9 +577,7 @@ public class UtilityCommands {
                 }
             }
 
-            long start = System.currentTimeMillis();
             List<Transaction2> transfers = Locutus.imp().getBankDB().getTransactions(TRANSACTIONS_2.SENDER_ID.eq((long) aaId).and(TRANSACTIONS_2.SENDER_TYPE.eq(2)).and(TRANSACTIONS_2.TX_DATETIME.gt(cutoff)));
-            totalBankDiff += System.currentTimeMillis() - start;
 
             transfers.removeIf(f -> f.sender_id != aaId || f.tx_datetime < cutoff);
             transfers.removeIf(f -> f.note != null && f.note.contains("of the alliance bank inventory"));
@@ -690,65 +687,77 @@ public class UtilityCommands {
     }
 
     @Command(aliases = {"nap", "napdown"})
-    public String nap() {
-        long turnEnd = 238338;
-        String napLink = "<https://politicsandwar.fandom.com/wiki/Blue_Balled>\n<https://forum.politicsandwar.com/index.php?/topic/36719-peace-all-in-a-day/>";
+
+    public String nap(@Default("false") boolean listExpired) {
+        Map<Long, String> naps = new LinkedHashMap<>();
+        naps.put(238332L * 7200 * 1000, "<https://politicsandwar.fandom.com/wiki/Blue_Balled>\n<https://forum.politicsandwar.com/index.php?/topic/36719-peace-all-in-a-day/>");
+        naps.put(239436L * 7200 * 1000, "<https://forum.politicsandwar.com/index.php?/topic/39524-treaty-why-nap-when-you-can-sleep/>");
+        naps.put(1726938000000L, "(Mid-turn, 5:00pm UTC) <https://forum.politicsandwar.com/index.php?/topic/41182-peace-casino-royale/>");
+        naps.put(1743120000000L, "<https://forum.politicsandwar.com/index.php?/topic/46146-peace-darkest-hour-deux-done/>");
+        naps.put(1737763200000L, "<https://forum.politicsandwar.com/index.php?/topic/46146-peace-darkest-hour-deux-done/>");
+
         long turn = TimeUtil.getTurn();
+        int skippedExpired = 0;
 
-        long diff = (turnEnd - turn) * TimeUnit.HOURS.toMillis(2);
-
-        if (diff <= 0) {
-            String[] images = new String[] {
-                    "3556290",
-                    "13099758",
-                    "5876175",
-                    "15996537",
-                    "13578642",
-                    "11331727",
-                    "13776910",
-                    "3381639",
-                    "8476393",
-                    "3581186",
-                    "13354647",
-                    "5652813",
-                    "7645437",
-                    "9507023",
-                    "8832122",
-                    "4735568",
-                    "7391113",
-                    "5196956",
-                    "11955188",
-                    "5483839",
-                    "12321108",
-                    "17686107",
-                    "12262416",
-                    "13093956",
-                    "4909014",
-                    "17318955",
-                    "4655431",
-                    "14853646",
-                    "14464332",
-                    "14583973",
-                    "18127160",
-                    "4897716",
-                    "15353915",
-                    "8503723"
-            };
-            String baseUrl = "https://tenor.com/view/";
-            String id = images[ThreadLocalRandom.current().nextInt(images.length)];
-            return baseUrl + id;
-        }
-
-        String title = "GW Countdown: " + TimeUtil.secToTime(TimeUnit.MILLISECONDS, diff) + " | " + (turnEnd - turn) + " turns";
         StringBuilder response = new StringBuilder();
-
-        String url = "https://www.epochconverter.com/countdown?q=" + TimeUtil.getTimeFromTurn(turnEnd);
-        response.append(url);
-        if (napLink != null && !napLink.isEmpty()) {
-            response.append("\n" + napLink);
+        for (Map.Entry<Long, String> entry : naps.entrySet()) {
+            long timeEnd = entry.getKey();
+            long turnEnd = TimeUtil.getTurn(timeEnd);
+            if (turnEnd < turn && !listExpired) {
+                skippedExpired++;
+                continue;
+            }
+            response.append("## " + DiscordUtil.timestamp(timeEnd, null) + ":\n");
+            response.append("- " + StringMan.join(entry.getValue().split("\n"), "\n- ") + "\n\n");
         }
 
-        return "**" + title + "**\n" + response.toString();
+        if (response.length() == 0) {
+            if (skippedExpired > 0) {
+                response.append("Skipped " + skippedExpired + " expired NAPs, set `listExpired: True` to include\n");
+            }
+            response.append("No active NAPs");
+        }
+        return response.toString();
+//            String[] images = new String[] {
+//                    "3556290",
+//                    "13099758",
+//                    "5876175",
+//                    "15996537",
+//                    "13578642",
+//                    "11331727",
+//                    "13776910",
+//                    "3381639",
+//                    "8476393",
+//                    "3581186",
+//                    "13354647",
+//                    "5652813",
+//                    "7645437",
+//                    "9507023",
+//                    "8832122",
+//                    "4735568",
+//                    "7391113",
+//                    "5196956",
+//                    "11955188",
+//                    "5483839",
+//                    "12321108",
+//                    "17686107",
+//                    "12262416",
+//                    "13093956",
+//                    "4909014",
+//                    "17318955",
+//                    "4655431",
+//                    "14853646",
+//                    "14464332",
+//                    "14583973",
+//                    "18127160",
+//                    "4897716",
+//                    "15353915",
+//                    "8503723"
+//            };
+//            String baseUrl = "https://tenor.com/view/";
+//            String id = images[ThreadLocalRandom.current().nextInt(images.length)];
+//            return baseUrl + id;
+//        }
     }
     @Command(desc = "Rank the number of wars between two coalitions by nation or alliance\n" +
             "Defaults to alliance ranking")
@@ -808,7 +817,9 @@ public class UtilityCommands {
     }
 
     @Command(desc = "Calculate the costs of purchasing cities (from current to max)", aliases = {"citycost", "citycosts"})
-    public String CityCost(@Range(min=1, max=100) int currentCity, @Range(min=1, max=100) int maxCity, @Default("false") boolean manifestDestiny, @Default("false") boolean urbanPlanning, @Default("false") boolean advancedUrbanPlanning, @Default("false") boolean metropolitanPlanning, @Default("false") boolean governmentSupportAgency) {
+    public String CityCost(@Range(min=1, max=100) int currentCity, @Range(min=1, max=100) int maxCity, @Default("false") boolean manifestDestiny, @Default("false") boolean urbanPlanning, @Default("false") boolean advancedUrbanPlanning, @Default("false") boolean metropolitanPlanning,
+                           @Default("false") boolean governmentSupportAgency,
+                           @Default("false") boolean domestic_affairs) {
         if (maxCity > 1000) throw new IllegalArgumentException("Max cities 1000");
 
         double total = 0;
@@ -818,7 +829,8 @@ public class UtilityCommands {
                     urbanPlanning && i >= Projects.URBAN_PLANNING.requiredCities(),
                     advancedUrbanPlanning && i >= Projects.ADVANCED_URBAN_PLANNING.requiredCities(),
                     metropolitanPlanning && i >= Projects.METROPOLITAN_PLANNING.requiredCities(),
-                    governmentSupportAgency);
+                    governmentSupportAgency,
+                    domestic_affairs);
         }
 
         return "$" + MathMan.format(total);
@@ -940,7 +952,7 @@ public class UtilityCommands {
     }
 
     @Command(desc = "Check how many turns are left in the city/project timer", aliases = {"TurnTimer", "Timer", "CityTimer", "ProjectTimer"})
-    public String TurnTimer(@Me GuildDB db, DBNation nation) throws IOException {
+    public String TurnTimer(DBNation nation) throws IOException {
         StringBuilder response = new StringBuilder();
         response.append("City: " + nation.getCityTurns() + " turns (" + nation.getCities() + " cities)\n");
         response.append("Project: " + nation.getProjectTurns() + " turns | " +
@@ -998,7 +1010,6 @@ public class UtilityCommands {
 
     @Command(desc = "Get nation or bank loot history\n" +
             "Shows how much you will receive if you defeat a nation")
-    @RolePermission(Roles.MEMBER)
     public static String loot(@Me IMessageIO output, @Me DBNation me, NationOrAlliance nationOrAlliance,
                               @Arg("Score of the defeated nation\n" +
                                       "i.e. For determining bank loot percent")
@@ -1137,6 +1148,7 @@ public class UtilityCommands {
                               Set<Project> projects,
                               @Default("false") boolean technologicalAdvancement,
                               @Default("false") boolean governmentSupportAgency,
+                              @Default("false") boolean domesticAffairs,
                               @Switch("n") Set<DBNation> nations,
                               @Switch("s") SpreadSheet sheet,
                               @Switch("p") boolean ignoreProjectSlots,
@@ -1174,6 +1186,7 @@ public class UtilityCommands {
                     "cities",
                     "technological_advancement",
                     "government_support_agency",
+                    "domestic_affairs",
                     "cost",
                     "cost_raw",
                     "errors"
@@ -1195,6 +1208,7 @@ public class UtilityCommands {
                 if (technologicalAdvancement)
                     nationCopy.setDomesticPolicy(DomesticPolicy.TECHNOLOGICAL_ADVANCEMENT);
                 if (governmentSupportAgency) nationCopy.setProject(Projects.GOVERNMENT_SUPPORT_AGENCY);
+                if (domesticAffairs) nationCopy.setProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS);
 
                 for (Project project : projectsList) {
                     boolean canBuy = false;
@@ -1224,9 +1238,10 @@ public class UtilityCommands {
                 header.set(2, String.valueOf(nation.getCities()));
                 header.set(3, nationCopy.getDomesticPolicy() == DomesticPolicy.TECHNOLOGICAL_ADVANCEMENT ? "true" : "false");
                 header.set(4, nationCopy.hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY) ? "true" : "false");
-                header.set(5, ResourceType.resourcesToString(nationCost));
-                header.set(6, MathMan.format(ResourceType.convertedTotal(nationCost)));
-                header.set(7, StringMan.join(errors, ","));
+                header.set(5, nationCopy.hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS) ? "true" : "false");
+                header.set(6, ResourceType.resourcesToString(nationCost));
+                header.set(7, MathMan.format(ResourceType.convertedTotal(nationCost)));
+                header.set(8, StringMan.join(errors, ","));
                 for (int i = 0; i < projectsList.size(); i++) {
                     header.set(i + indexOffset, String.valueOf(buy.get(i)));
                 }
@@ -1262,7 +1277,7 @@ public class UtilityCommands {
 
     @Command(desc = "Add or remove the configured auto roles to all users in this discord guild")
     @RolePermission(Roles.INTERNAL_AFFAIRS)
-    public static String autoroleall(@Me User author, @Me GuildDB db, @Me IMessageIO channel, @Me JSONObject command, @Switch("f") boolean force) {
+    public static String autoroleall(@Me GuildDB db, @Me IMessageIO channel, @Me JSONObject command, @Switch("f") boolean force) {
         IAutoRoleTask task = db.getAutoRoleTask();
         task.syncDB();
 
@@ -1330,7 +1345,7 @@ public class UtilityCommands {
     @Command(desc = "Create a sheet of alliances with customized columns\n" +
             "See <https://github.com/xdnw/locutus/wiki/nation_placeholders> for a list of placeholders")
     @NoFormat
-    public static String AllianceSheet(NationPlaceholders placeholders, AlliancePlaceholders aaPlaceholders, @Me Guild guild, @Me IMessageIO channel, @Me DBNation me, @Me User author, @Me GuildDB db,
+    public static String AllianceSheet(AlliancePlaceholders aaPlaceholders, @Me Guild guild, @Me IMessageIO channel, @Me DBNation me, @Me User author, @Me GuildDB db,
                                 @Arg("The nations to include in each alliance")
                                 Set<DBNation> nations,
                                 @Arg("The columns to use in the sheet")
@@ -1696,8 +1711,8 @@ public class UtilityCommands {
 
         String arg0;
         String title;
-        if (nationOrAlliances.size() == 1) {
-            NationOrAlliance nationOrAA = nationOrAlliances.iterator().next();
+        if ((snapshotDate == null && nationOrAlliances.size() == 1) || nations.size() == 1) {
+            NationOrAlliance nationOrAA = snapshotDate == null ? nationOrAlliances.iterator().next() : nations.iterator().next();
             if (nationOrAA.isNation()) {
                 DBNation nation = nationOrAA.asNation();
                 title = nation.getNation();
@@ -1706,54 +1721,54 @@ public class UtilityCommands {
 
                 //Run audit (if ia/econ, or self)
                 if ((myNation != null && myNation.getId() == nation.getId()) || Roles.INTERNAL_AFFAIRS_STAFF.has(author, guild)) {
-                    CM.audit.run audit = CM.audit.run.cmd.create(nation.getQualifiedId(), null, null, null, null, null);
+                    CM.audit.run audit = CM.audit.run.cmd.nationList(nation.getQualifiedId());
                     msg = msg.commandButton(CommandBehavior.EPHEMERAL, audit, "Audit");
                 }
                 //Bans
-                CM.nation.list.bans bans = CM.nation.list.bans.cmd.create(nation.getId() + "");
+                CM.nation.list.bans bans = CM.nation.list.bans.cmd.nationId(nation.getId() + "");
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, bans, "Bans");
                 //Reports
-                CM.report.search reports = CM.report.search.cmd.create(nation.getNation_id() + "", null, null, null);
+                CM.report.search reports = CM.report.search.cmd.nationIdReported(nation.getNation_id() + "");
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, reports, "Reports");
                 //Projects
-                CM.project.slots projects = CM.project.slots.cmd.create(nation.getUrl());
+                CM.project.slots projects = CM.project.slots.cmd.nation(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, projects, "Projects");
                 //Departures
-                CM.nation.departures departures = CM.nation.departures.cmd.create(nation.getUrl(), "9999d", null, null, null, null, null, null);
+                CM.nation.departures departures = CM.nation.departures.cmd.nationOrAlliance(nation.getUrl()).time("9999d");
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, departures, "Departures");
                 //Multis
-                CM.nation.list.multi multis = CM.nation.list.multi.cmd.create(nation.getUrl());
+                CM.nation.list.multi multis = CM.nation.list.multi.cmd.nation(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, multis, "Multis");
                 //Reroll
-                CM.nation.reroll reroll = CM.nation.reroll.cmd.create(nation.getUrl());
+                CM.nation.reroll reroll = CM.nation.reroll.cmd.nation(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, reroll, "Reroll");
                 //Open alliance info
                 if (nation.getAlliance_id() != 0) {
-                    CM.who info = CM.who.cmd.create(nation.getAllianceUrl(), null, null, null, null, null, null, null, null, null);
+                    CM.who info = CM.who.cmd.nationOrAlliances(nation.getAllianceUrl());
                     msg = msg.commandButton(CommandBehavior.EPHEMERAL, info, "Alliance");
                 }
                 //Score command
 
-                CM.nation.score score = CM.nation.score.cmd.create(nation.getUrl(), null, null, null, null, null, "", "", "", "", null, "");
+                CM.nation.score score = CM.nation.score.cmd.nation(nation.getUrl()).missiles("").nukes("").projects("").avg_infra("").builtMMR("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, score, "Score");
                 //Revenue
-                CM.nation.revenue revenue = CM.nation.revenue.cmd.create(nation.getUrl(), null, null, null, null, null, null, null);
+                CM.nation.revenue revenue = CM.nation.revenue.cmd.nations(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, revenue, "Revenue");
                 //WarInfo
-                CM.war.info warInfo = CM.war.info.cmd.create(nation.getUrl());
+                CM.war.info warInfo = CM.war.info.cmd.nation(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, warInfo, "War Info");
                 //Counter
                 String aaIdStr = db.getAllianceIds().stream().map(f -> "AA:" + f).collect(Collectors.joining(","));
-                CM.war.counter.nation counter = CM.war.counter.nation.cmd.create(nation.getUrl(), aaIdStr, null, null, null, null, null, null, null, "");
+                CM.war.counter.nation counter = CM.war.counter.nation.cmd.target(nation.getUrl()).counterWith(aaIdStr).ping("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, counter, "Counter");
                 //Loot
-                CM.nation.loot loot = CM.nation.loot.cmd.create(nation.getUrl(), null, null);
+                CM.nation.loot loot = CM.nation.loot.cmd.nationOrAlliance(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, loot, "Loot");
                 //Cost
-                CM.alliance.cost cost = CM.alliance.cost.cmd.create(nation.getUrl(), null, null);
+                CM.alliance.cost cost = CM.alliance.cost.cmd.nations(nation.getUrl());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, cost, "Cost");
                 //unit history
-                CM.unit.history history = CM.unit.history.cmd.create(nation.getUrl(), "", null);
+                CM.unit.history history = CM.unit.history.cmd.nation(nation.getUrl()).unit("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, history, "Unit History");
 
                 msg.send();
@@ -1772,50 +1787,50 @@ public class UtilityCommands {
 
                 // Militarization graph
                 CM.alliance.stats.metricsByTurn militarization =
-                        CM.alliance.stats.metricsByTurn.cmd.create(AllianceMetric.GROUND_PCT.name(), alliance.getQualifiedId(), "7d", null, null);
+                        CM.alliance.stats.metricsByTurn.cmd.metric(AllianceMetric.GROUND_PCT.name()).coalition(alliance.getQualifiedId()).time("7d");
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, militarization, "Military Graph");
                 // Tiering graph
                 CM.stats_tier.cityTierGraph tiering =
-                        CM.stats_tier.cityTierGraph.cmd.create(alliance.getQualifiedId(), "", null, null, null, null, null, null);
+                        CM.stats_tier.cityTierGraph.cmd.coalition1(alliance.getQualifiedId()).coalition2("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, tiering, "City Tier Graph");
                 // strength graph
                 CM.stats_tier.strengthTierGraph strength =
-                        CM.stats_tier.strengthTierGraph.cmd.create(alliance.getQualifiedId(), "", null, null, null, null, null, null, null, null, null);
+                        CM.stats_tier.strengthTierGraph.cmd.coalition1(alliance.getQualifiedId()).coalition2("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, strength, "Strength Tier Graph");
                 // mmr tier
                 CM.stats_tier.mmrTierGraph mmr =
-                        CM.stats_tier.mmrTierGraph.cmd.create(alliance.getQualifiedId(), "", null, null, null, null, null);
+                        CM.stats_tier.mmrTierGraph.cmd.coalition1(alliance.getQualifiedId()).coalition2("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, mmr, "MMR Tier Graph");
                 // spy tier
                 CM.stats_tier.spyTierGraph spy =
-                        CM.stats_tier.spyTierGraph.cmd.create(alliance.getQualifiedId(), "", null, null, null, null, null, null);
+                        CM.stats_tier.spyTierGraph.cmd.coalition1(alliance.getQualifiedId()).coalition2("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, spy, "Spy Tier Graph");
 
                 //- /coalition create - add
                 CM.coalition.create createCoalition =
-                        CM.coalition.create.cmd.create(alliance.getQualifiedId(), "");
+                        CM.coalition.create.cmd.alliances(alliance.getQualifiedId()).coalitionName("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, createCoalition, "Create Coalition");
 
                 //- /coalition generate - sphere
                 CM.coalition.generate generateCoalition =
-                        CM.coalition.generate.cmd.create("", alliance.getQualifiedId(), "80");
+                        CM.coalition.generate.cmd.coalition("").rootAlliance(alliance.getQualifiedId()).topX("80");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, generateCoalition, "Add Sphere Coalition");
                 //- /alliance departures
                 CM.alliance.departures departures =
-                        CM.alliance.departures.cmd.create(alliance.getQualifiedId(), "", null, null, null, null, null, null);
+                        CM.alliance.departures.cmd.nationOrAlliance(alliance.getQualifiedId()).time("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, departures, "Departures");
                 //- loot
                 CM.nation.loot loot =
-                        CM.nation.loot.cmd.create(alliance.getQualifiedId(), "", null);
+                        CM.nation.loot.cmd.nationOrAlliance(alliance.getQualifiedId()).nationScore("");
                 msg = msg.modal(CommandBehavior.EPHEMERAL, loot, "Loot");
 
                 // alliance cost
                 CM.alliance.cost cost =
-                        CM.alliance.cost.cmd.create(alliance.getQualifiedId(), null, null);
+                        CM.alliance.cost.cmd.nations(alliance.getQualifiedId());
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, cost, "Cost");
                 // offshore find
-                CM.offshore.findForCoalition findOffshore =
-                        CM.offshore.findForCoalition.cmd.create(alliance.getQualifiedId(), "200d");
+                CM.offshore.find.for_coalition findOffshore =
+                        CM.offshore.find.for_coalition.cmd.alliance(alliance.getQualifiedId()).cutoffMs("200d");
                 msg = msg.commandButton(CommandBehavior.EPHEMERAL, findOffshore, "Find Offshores");
 
                 msg.send();
@@ -1846,23 +1861,23 @@ public class UtilityCommands {
             msg = msg.commandButton(CommandBehavior.EPHEMERAL, command.put("list", "True").put("listMentions", "True"), "List");
 //            // Tiering graph
 //            CM.stats_tier.cityTierGraph tiering =
-//                    CM.stats_tier.cityTierGraph.cmd.create(filter, "", null, null, null, null, null);
+//                    CM.stats_tier.cityTierGraph.cmd.create(filter, "");
 //            msg = msg.modal(CommandBehavior.EPHEMERAL, tiering, "City Tier Graph");
 //            // strength graph
 //            CM.stats_tier.strengthTierGraph strength =
-//                    CM.stats_tier.strengthTierGraph.cmd.create(filter, "", null, null, null, null, null, null, null, null);
+//                    CM.stats_tier.strengthTierGraph.cmd.create(filter, "");
 //            msg = msg.modal(CommandBehavior.EPHEMERAL, strength, "Strength Tier Graph");
 //            // mmr tier
 //            CM.stats_tier.mmrTierGraph mmr =
-//                    CM.stats_tier.mmrTierGraph.cmd.create(filter, "", null, null, null, null);
+//                    CM.stats_tier.mmrTierGraph.cmd.create(filter, "");
 //            msg = msg.modal(CommandBehavior.EPHEMERAL, mmr, "MMR Tier Graph");
 //            // spy tier
 //            CM.stats_tier.spyTierGraph spy =
-//                    CM.stats_tier.spyTierGraph.cmd.create(filter, "", null, null, null, null, null, null);
+//                    CM.stats_tier.spyTierGraph.cmd.create(filter, "");
 //            msg = msg.modal(CommandBehavior.EPHEMERAL, spy, "Spy Tier Graph");
 //            // alliance cost
 //            CM.alliance.cost cost =
-//                    CM.alliance.cost.cmd.create(filter, null);
+//                    CM.alliance.cost.cmd.create(filter);
 //            msg = msg.commandButton(CommandBehavior.EPHEMERAL, cost, "Cost");
 
             msg.send();
@@ -2048,7 +2063,7 @@ public class UtilityCommands {
         sheet.updateClearCurrentTab();
         sheet.updateWrite();
 
-        CM.deposits.addSheet cmd = CM.deposits.addSheet.cmd.create(sheet.getURL(), "#deposit", null, null);
+        CM.deposits.addSheet cmd = CM.deposits.addSheet.cmd.sheet(sheet.getURL()).note("#deposit");
 
         IMessageBuilder msg = channel.create();
         StringBuilder result = new StringBuilder();
@@ -2114,9 +2129,12 @@ public class UtilityCommands {
 
     @Command(aliases = {"setloot"})
     @RolePermission(value = Roles.ADMIN, root = true)
-    public String setLoot(@Me IMessageIO channel, @Me DBNation me, DBNation nation, Map<ResourceType, Double> resources, @Default("ESPIONAGE") NationLootType type, @Default("1") double fraction) {
+    public String setLoot(DBNation nation, Map<ResourceType, Double> resources, @Default("ESPIONAGE") NationLootType type, @Default("1") double fraction) {
         resources = PW.multiply(resources, 1d / fraction);
-        Locutus.imp().getNationDB().saveLoot(nation.getNation_id(), TimeUtil.getTurn(), ResourceType.resourcesToArray(resources), type);
+        double[] rssArr = ResourceType.resourcesToArray(resources);
+        Locutus.imp().runEventsAsync(events ->
+                LootEntry.forNation(nation.getNation_id(), System.currentTimeMillis(), rssArr, type)
+                        .save(events));
         return "Set " + nation.getNation() + " to " + ResourceType.resourcesToString(resources) + " worth: ~$" + ResourceType.convertedTotal(resources);
     }
 
@@ -2207,6 +2225,226 @@ public class UtilityCommands {
         return response.toString();
     }
 
+    // Helper function to check and update inactivity streaks
+    private void checkAndUpdateStreak(Map<Integer, Long> lastActive, Map<Integer, Long> lastNotGray, Map<Integer, Long> lastStreak, Map<Integer, Integer> countMap, int nationId, long day, int daysInactive) {
+        long lastActiveDay = lastActive.getOrDefault(nationId, day);
+        long lastNotGrayDay = lastNotGray.getOrDefault(nationId, day);
+        long lastActiveAdded = lastStreak.getOrDefault(nationId, 0L);
+        if (lastActiveAdded == lastActiveDay) return;
+
+        if (day - lastNotGrayDay >= daysInactive) {
+            countMap.put(nationId, countMap.getOrDefault(nationId, 0) + 1);
+            lastStreak.put(nationId, lastActiveAdded);
+        }
+    }
+
+    @Command(desc = "Get the inactivity streak of a set of nations over a specified timeframe")
+    public String grayStreak(@Me GuildDB db, @Me IMessageIO io,
+                                    Set<DBNation> nations,
+                                    int daysInactive,
+                                    @Timestamp long timeframe,
+                                    @Switch("s") SpreadSheet sheet) throws IOException, ParseException, GeneralSecurityException {
+        long minNationAge = Long.MAX_VALUE;
+        for (DBNation nation : nations) {
+            minNationAge = Math.min(minNationAge, nation.getDate());
+        }
+        minNationAge = Math.max(minNationAge, timeframe);
+        Set<Integer> nationIds = new IntOpenHashSet(nations.stream().map(DBNation::getNation_id).collect(Collectors.toSet()));
+
+        DataDumpParser parser = Locutus.imp().getDataDumper(true);
+        List<Long> validDays = parser.getDays(true, false);
+        long today = TimeUtil.getDay();
+        long finalMinDay = TimeUtil.getDay(minNationAge);
+
+        Map<Integer, Long> lastActive = new Int2LongOpenHashMap();
+        Map<Integer, Long> lastNotGray = new Int2LongOpenHashMap();
+        Map<Integer, Long> lastStreak = new Int2ObjectOpenHashMap<>();
+        Map<Integer, Integer> countMap = new Int2ObjectOpenHashMap<>();
+
+        parser.iterateAll(f -> f >= finalMinDay, (h, r) -> r.required(h.nation_id).optional(h.vm_turns).required(h.color), null, new BiConsumer<Long, NationHeader>() {
+            @Override
+            public void accept(Long day, NationHeader header) {
+                int nationId = header.nation_id.get();
+                if (!nationIds.contains(nationId)) return;
+
+                NationColor color = header.color.get();
+                if (color != NationColor.GRAY) {
+                    lastNotGray.put(nationId, day);
+                    if (color != NationColor.BEIGE) {
+                        lastActive.put(nationId, day);
+                    }
+                    checkAndUpdateStreak(lastActive, lastNotGray, lastStreak, countMap, nationId, day, daysInactive);
+                }
+            }
+        }, null, new Consumer<Long>() {
+            @Override
+            public void accept(Long day) {
+                // Called when all nations have been processed for a day
+            }
+        });
+        for (int nationId : nationIds) {
+            checkAndUpdateStreak(lastActive, lastNotGray, lastStreak, countMap, nationId, today, daysInactive);
+        }
+
+        if (sheet == null) {
+            sheet = SpreadSheet.create(db, SheetKey.INACTIVITY_STREAK);
+        }
+
+        List<String> header = new ArrayList<>(Arrays.asList("nation", "alliance", "streak"));
+        sheet.setHeader(header);
+        for (DBNation nation : nations) {
+            int nationId = nation.getNation_id();
+            int streak = countMap.getOrDefault(nationId, 0);
+            if (streak > 0) {
+                ArrayList<Object> row = new ArrayList<>();
+                row.add(MarkupUtil.sheetUrl(nation.getNation(), nation.getUrl()));
+                row.add(MarkupUtil.sheetUrl(nation.getAllianceName(), nation.getAllianceUrl()));
+                row.add(streak);
+                sheet.addRow(row);
+            }
+        }
+        sheet.updateClearCurrentTab();
+        sheet.updateWrite();
+        sheet.attach(io.create(), "inactivity").send();
+        return null;
+    }
+
+
+    @Command(desc = "Get the VM history of a set of nations")
+    public static String vmHistory(@Me IMessageIO io, Set<DBNation> nations, @Switch("s") SpreadSheet sheet) throws IOException, ParseException {
+        if (nations.size() > 1000) {
+            throw new IllegalArgumentException("Cannot check more than 1000 nations (" + nations.size() + " provided)");
+        }
+
+        long minDay = Long.MAX_VALUE;
+        for (DBNation nation : nations) {
+            minDay = Math.min(minDay, TimeUtil.getDay(nation.getDate()));
+        }
+
+        Map<Integer, DBNation> nationMap = nations.stream().collect(Collectors.toMap(DBNation::getNation_id, f -> f));
+        Map<Integer, Set<Long>> daysVM = new HashMap<>();
+        Map<Integer, Set<Long>> daysPresentNotVM = new HashMap<>();
+
+        Predicate<Integer> contains;
+        if (nations.size() == 1) {
+            int natId = nations.iterator().next().getNation_id();
+            contains = f -> f == natId;
+        } else {
+            Set<Integer> natIds = new IntOpenHashSet(nations.stream().map(DBNation::getNation_id).collect(Collectors.toSet()));
+            contains = natIds::contains;
+        }
+
+        long[] lastMsg = {System.currentTimeMillis()};
+        CompletableFuture<IMessageBuilder> msgFuture = io.send("Mounting nation snapshots...");
+
+        DataDumpParser parser = Locutus.imp().getDataDumper(true);
+        List<Long> validDays = parser.getDays(true, false);
+        long today = TimeUtil.getDay();
+
+        long finalMinDay = minDay;
+        parser.iterateAll(f -> f >= finalMinDay, (h, r) -> r.required(h.nation_id).optional(h.vm_turns), null, new BiConsumer<Long, NationHeader>() {
+            private long lastDay = -1;
+
+            @Override
+            public void accept(Long day, NationHeader header) {
+                int nationId = header.nation_id.get();
+                if (!contains.test(nationId)) return;
+                if (lastDay != day) {
+                    lastDay = day;
+                }
+                Integer vmTurns = header.vm_turns.get();
+                if (vmTurns != null && vmTurns > 0) {
+                    daysVM.computeIfAbsent(nationId, f -> new LinkedHashSet<>()).add(day);
+                } else {
+                    daysPresentNotVM.computeIfAbsent(nationId, f -> new LinkedHashSet<>()).add(day);
+                }
+            }
+        }, null, new Consumer<Long>() {
+            @Override
+            public void accept(Long day) {
+                long now = System.currentTimeMillis();
+                if (now - lastMsg[0] > 5000) {
+                    lastMsg[0] = now;
+                    io.updateOptionally(msgFuture, (day - finalMinDay) + "/" + (today - finalMinDay));
+                }
+            }
+        });
+
+        Map<Integer, List<String[]>> changesByNation = new LinkedHashMap<>();
+
+        for (DBNation nation : nations) {
+            long dayStart = TimeUtil.getDay(nation.getDate());
+            long lastStatus = -1; // -1 indicates no previous status
+            for (long day = dayStart; day < today; day++) {
+                if (!validDays.contains(day)) continue;
+                Set<Long> vmDays = daysVM.getOrDefault(nation.getNation_id(), Collections.emptySet());
+                Set<Long> presentNotVMDays = daysPresentNotVM.getOrDefault(nation.getNation_id(), Collections.emptySet());
+
+                long currentStatus;
+                if (vmDays.contains(day)) {
+                    currentStatus = 2; // VM
+                } else if (presentNotVMDays.contains(day)) {
+                    currentStatus = 0; // ACTIVE
+                } else {
+                    currentStatus = 1; // VM_ABSENT
+                }
+                if (lastStatus != -1 && lastStatus != currentStatus) {
+                    String statusString = switch ((int) currentStatus) {
+                        case 0 -> "ACTIVE";
+                        case 1 -> "VM_ABSENT";
+                        case 2 -> "VM";
+                        default -> "UNKNOWN";
+                    };
+                    long timeMs = TimeUtil.getTimeFromDay(day);
+                    changesByNation.computeIfAbsent(nation.getNation_id(), k -> new ArrayList<>())
+                            .add(new String[]{TimeUtil.DD_MM_YYYY.format(new Date(timeMs)), statusString});
+                }
+                lastStatus = currentStatus;
+            }
+        }
+
+        if (changesByNation.isEmpty()) {
+            return "No changes found in VM status for the specified nations";
+        }
+
+        if (sheet != null) {
+            List<String> header = new ArrayList<>(Arrays.asList("nation", "date", "status"));
+            sheet.setHeader(header);
+            for (Map.Entry<Integer, List<String[]>> entry : changesByNation.entrySet()) {
+                int nationId = entry.getKey();
+                DBNation nation = nationMap.get(nationId);
+                for (String[] change : entry.getValue()) {
+                    ArrayList<Object> row = new ArrayList<>();
+                    row.add(MarkupUtil.sheetUrl(nation.getNation(), nation.getUrl()));
+                    row.add(change[0]);
+                    row.add(change[1]);
+                    sheet.addRow(row);
+                }
+            }
+            sheet.updateClearCurrentTab();
+            sheet.updateWrite();
+            sheet.attach(io.create(), "revenue").send();
+        } else {
+            StringBuilder file = new StringBuilder();
+            file.append("nation\tdate\tstatus\n");
+            for (Map.Entry<Integer, List<String[]>> entry : changesByNation.entrySet()) {
+                int nationId = entry.getKey();
+                DBNation nation = nationMap.get(nationId);
+                for (String[] change : entry.getValue()) {
+                    file.append(nation.getNation()).append("\t").append(change[0]).append("\t").append(change[1]).append("\n");
+                }
+            }
+            IMessageBuilder msg = io.create();
+            if (nations.size() == 1) {
+                msg.append(file.toString());
+            } else {
+                msg = msg.file("vm_history.txt", file.toString());
+            }
+            msg.send();
+        }
+        return null;
+    }
+
     @Command(aliases = {"alliancecost", "aacost"}, desc = "Get the value of nations including their cities, projects and units")
     public String allianceCost(@Me IMessageIO channel, @Me GuildDB db,
                                NationList nations, @Switch("u") boolean update, @Switch("s") @Timestamp Long snapshotDate) {
@@ -2233,9 +2471,10 @@ public class UtilityCommands {
                 boolean acp = i > Projects.ADVANCED_URBAN_PLANNING.requiredCities() && projects.contains(Projects.ADVANCED_URBAN_PLANNING);
                 boolean mp = i > Projects.METROPOLITAN_PLANNING.requiredCities() && projects.contains(Projects.METROPOLITAN_PLANNING);
                 boolean gsa = projects.contains(Projects.GOVERNMENT_SUPPORT_AGENCY);
-                cityCost += PW.City.nextCityCost(i, manifest, cp, acp, mp, gsa);
+                boolean bda = projects.contains(Projects.BUREAU_OF_DOMESTIC_AFFAIRS);
+                cityCost += PW.City.nextCityCost(i, manifest, cp, acp, mp, gsa, bda);
             }
-            Map<Integer, JavaCity> cityMap = nation.getCityMap(update, false);
+            Map<Integer, JavaCity> cityMap = nation.getCityMap(update, update,false);
             for (Map.Entry<Integer, JavaCity> cityEntry : cityMap.entrySet()) {
                 JavaCity city = cityEntry.getValue();
                 {
@@ -2243,8 +2482,8 @@ public class UtilityCommands {
                     double infraFactor = 0.95;
                     if (projects.contains(Projects.ARABLE_LAND_AGENCY)) landFactor *= 0.95;
                     if (projects.contains(Projects.CENTER_FOR_CIVIL_ENGINEERING)) infraFactor *= 0.95;
-                    landCost += PW.City.Land.calculateLand(250, city.getLand()) * landFactor;
-                    infraCost += PW.City.Infra.calculateInfra(10, city.getInfra()) * infraFactor;
+                    landCost += PW.City.Land.calculateLand(PW.City.Land.NEW_CITY_BASE, city.getLand()) * landFactor;
+                    infraCost += PW.City.Infra.calculateInfra(PW.City.Infra.NEW_CITY_BASE, city.getInfra()) * infraFactor;
                 }
                 city = cityEntry.getValue();
                 JavaCity empty = new JavaCity();
@@ -2351,15 +2590,18 @@ public class UtilityCommands {
 
         int numCities = nation.getCities();
         if (continent == null) continent = nation.getContinent();
+        origin.setOptimalPower(continent);
+        originMinus50.setOptimalPower(continent);
+
         if (rads == null) rads = nation.getRads();
         Predicate<Project> hasProject = forceProjects != null ? f -> forceProjects.contains(f) || nation.hasProject(f) : nation::hasProject;
-        double grossModifier = DBNation.getGrossModifier(false, openMarkets, hasProject.test(Projects.GOVERNMENT_SUPPORT_AGENCY));
+        double grossModifier = DBNation.getGrossModifier(false, openMarkets, hasProject.test(Projects.GOVERNMENT_SUPPORT_AGENCY), hasProject.test(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
 
-        JavaCity optimal1 = origin.optimalBuild(nation, 5000);
+        JavaCity optimal1 = origin.optimalBuild(nation, 5000, false, null);
         if (optimal1 == null) {
             return "Cannot generate optimal city build";
         }
-        JavaCity optimal2 = originMinus50.optimalBuild(nation, 5000);
+        JavaCity optimal2 = originMinus50.optimalBuild(nation, 5000, false, null);
         if (optimal2 == null) {
             return "Cannot generate optimal city build";
         }
@@ -2399,15 +2641,17 @@ public class UtilityCommands {
 
         int numCities = nation.getCities();
         if (continent == null) continent = nation.getContinent();
+        origin.setOptimalPower(continent);
+        originMinus50.setOptimalPower(continent);
         if (rads == null) rads = nation.getRads();
         Predicate<Project> hasProject = forceProjects != null ? f -> forceProjects.contains(f) || nation.hasProject(f) : nation::hasProject;
-        double grossModifier = DBNation.getGrossModifier(false, openMarkets, hasProject.test(Projects.GOVERNMENT_SUPPORT_AGENCY));
+        double grossModifier = DBNation.getGrossModifier(false, openMarkets, hasProject.test(Projects.GOVERNMENT_SUPPORT_AGENCY), hasProject.test(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
 
-        JavaCity optimal1 = origin.optimalBuild(nation, 5000);
+        JavaCity optimal1 = origin.optimalBuild(nation, 5000, false, null);
         if (optimal1 == null) {
             return "Cannot generate optimal city build";
         }
-        JavaCity optimal2 = originMinus50.optimalBuild(nation, 5000);
+        JavaCity optimal2 = originMinus50.optimalBuild(nation, 5000, false, null);
         if (optimal2 == null) {
             return "Cannot generate optimal city build";
         }

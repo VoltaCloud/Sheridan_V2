@@ -32,10 +32,10 @@ public class WikiGrantTemplate extends BotWikiGen {
     public String generateMarkdown() {
         StringBuilder requirements = new StringBuilder();
         requirements.append(reqSpoilter("Default Requirements",
-                AGrantTemplate.getRequirements(null, null, null)));
+                AGrantTemplate.getBaseRequirements(null, null, null, null, false)));
         for (TemplateTypes type : TemplateTypes.values) {
             requirements.append(reqSpoilter(type.name() + " Requirements",
-                    type.getRequirements()));
+                    type.getRequirements(false)));
         }
 
         return build(
@@ -79,7 +79,7 @@ public class WikiGrantTemplate extends BotWikiGen {
                 Use the `show_command: True` argument to get the creation command\n
                 Modify the command to edit, use a new template name to create a copy.
                 """,
-                CM.grant_template.info.cmd.create("YOUR_TEMPLATE", null, null, "True").toString(),
+                CM.grant_template.info.cmd.template("YOUR_TEMPLATE").show_command("True").toString(),
                 "# Deleting a template",
                 commandMarkdownSpoiler(CM.grant_template.delete.cmd),
                 "# Requirements",

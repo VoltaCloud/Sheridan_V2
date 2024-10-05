@@ -4,6 +4,7 @@ import com.politicsandwar.graphql.model.WarAttack;
 import link.locutus.discord.apiv1.domains.subdomains.attack.v3.ProjectileCursor;
 import link.locutus.discord.apiv1.enums.AttackType;
 import link.locutus.discord.apiv1.enums.MilitaryUnit;
+import link.locutus.discord.db.WarDB;
 import link.locutus.discord.db.entities.DBWar;
 import link.locutus.discord.util.io.BitBuffer;
 
@@ -25,12 +26,12 @@ public class MissileCursor extends ProjectileCursor {
 
     @Override
     public int getUnitLosses(MilitaryUnit unit, boolean attacker) {
-        return unit == MilitaryUnit.MISSILE ? 1 : 0;
+        return attacker && unit == MilitaryUnit.MISSILE ? 1 : 0;
     }
 
     @Override
-    public void load(WarAttack attack) {
-        super.load(attack);
+    public void load(WarAttack attack, WarDB db) {
+        super.load(attack, db);
     }
 
     @Override

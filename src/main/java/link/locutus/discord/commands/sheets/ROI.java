@@ -3,8 +3,10 @@ package link.locutus.discord.commands.sheets;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBCity;
@@ -48,6 +50,11 @@ import java.util.function.Predicate;
 public class ROI extends Command {
     public ROI() {
         super("roi", "ReturnOnInvestment", CommandCategory.GAME_INFO_AND_TOOLS, CommandCategory.ECON, CommandCategory.MEMBER);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of();
     }
 
     @Override
@@ -377,7 +384,7 @@ public class ROI extends Command {
         Predicate<Project> hasProjects = p -> p.get(nation) > 0;
 
         {
-            JavaCity optimal = existingCity.roiBuild(nation.getContinent(), rads, numCities, hasProjects, nation.getGrossModifier(), days, timeout);
+            JavaCity optimal = existingCity.roiBuild(nation.getContinent(), rads, numCities, hasProjects, nation.getGrossModifier(), days, timeout, false, null);
             if (optimal != null) {
                 double baseOptimizedProfit = optimal.profitConvertedCached(nation.getContinent(), rads, hasProjects, numCities, nation.getGrossModifier());
                 if (baseOptimizedProfit > baseProfit) {
@@ -411,7 +418,7 @@ public class ROI extends Command {
                     }
                 };
 
-                JavaCity optimal = existingCity.roiBuild(nation.getContinent(), rads, numCities, hasProjectsProxy, nation.getGrossModifier(), days, timeout);
+                JavaCity optimal = existingCity.roiBuild(nation.getContinent(), rads, numCities, hasProjectsProxy, nation.getGrossModifier(), days, timeout, false, null);
                 if (optimal != null) {
                     double profit = optimal.profitConvertedCached(nation.getContinent(), rads, hasProjectsProxy, numCities, nation.getGrossModifier());
                     Map<ResourceType, Double> cost = ResourceType.add(
@@ -440,7 +447,7 @@ public class ROI extends Command {
                         return project == p || p.get(nation) > 0;
                     }
                 };
-                JavaCity optimal = existingCity.roiBuild(nation.getContinent(), rads, numCities, hasProjectsProxy, nation.getGrossModifier(), days, timeout);
+                JavaCity optimal = existingCity.roiBuild(nation.getContinent(), rads, numCities, hasProjectsProxy, nation.getGrossModifier(), days, timeout, false, null);
                 if (optimal != null) {
                     double profit = optimal.profitConvertedCached(nation.getContinent(), rads, hasProjectsProxy, numCities, nation.getGrossModifier());
                     Map<ResourceType, Double> cost = ResourceType.add(
@@ -468,8 +475,9 @@ public class ROI extends Command {
             boolean getAdvCityPlanning = numCities >= Projects.ADVANCED_URBAN_PLANNING.requiredCities() && !advCityPlanning;
             boolean getMetroPlanning = numCities >= Projects.METROPOLITAN_PLANNING.requiredCities() && !advCityPlanning;
             boolean gsa = nation.hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY);
+            boolean bda = nation.hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS);
 
-            double cityCost = PW.City.nextCityCost(numCities, manifest || true, cityPlanning || getCityPlanning, advCityPlanning || getAdvCityPlanning, metroPlanning || getMetroPlanning, gsa);
+            double cityCost = PW.City.nextCityCost(numCities, manifest || true, cityPlanning || getCityPlanning, advCityPlanning || getAdvCityPlanning, metroPlanning || getMetroPlanning, gsa, bda);
             double[] buildCost = existingCity.calculateCost(new JavaCity());
             double[] totalCost = buildCost.clone();
 
@@ -489,7 +497,7 @@ public class ROI extends Command {
 
         {
             JavaCity withInfra = new JavaCity(existingCity).setInfra(existingCity.getInfra() + Math.max(100, 1500 - existingCity.getInfra()));
-            withInfra = withInfra.roiBuild(nation.getContinent(), rads, numCities, hasProjects, nation.getGrossModifier(), days, timeout);
+            withInfra = withInfra.roiBuild(nation.getContinent(), rads, numCities, hasProjects, nation.getGrossModifier(), days, timeout, false, null);
             if (withInfra != null) {
                 double profit = withInfra.profitConvertedCached(nation.getContinent(), rads, hasProjects, numCities, nation.getGrossModifier());
                 double[] cost = withInfra.calculateCost(existingCity);
@@ -505,7 +513,7 @@ public class ROI extends Command {
 
         {
             JavaCity withLand = new JavaCity(existingCity).setLand(existingCity.getLand() + 500);
-            withLand = withLand.roiBuild(nation.getContinent(), rads, numCities, hasProjects, nation.getGrossModifier(), days, timeout);
+            withLand = withLand.roiBuild(nation.getContinent(), rads, numCities, hasProjects, nation.getGrossModifier(), days, timeout, false, null);
             if (withLand != null) {
                 double profit = withLand.profitConvertedCached(nation.getContinent(), rads, hasProjects, numCities, nation.getGrossModifier());
                 double[] cost = withLand.calculateCost(existingCity);

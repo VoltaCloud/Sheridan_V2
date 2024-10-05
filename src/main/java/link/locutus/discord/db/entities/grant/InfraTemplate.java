@@ -37,12 +37,12 @@ public class InfraTemplate extends AGrantTemplate<Double>{
                 rs.getLong("expire"),
                 rs.getLong("decay"),
                 rs.getBoolean("allow_ignore"),
-                rs.getBoolean("repeatable"));
+                rs.getLong("repeatable"));
     }
 
     // create new constructor  with typed parameters instead of resultset
-    public InfraTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, long level, boolean onlyNewCities, int require_n_offensives, boolean allow_rebuild, long expiryOrZero, long decayOrZero, boolean allowIgnore, boolean repeatable) {
-        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable);
+    public InfraTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, long level, boolean onlyNewCities, int require_n_offensives, boolean allow_rebuild, long expiryOrZero, long decayOrZero, boolean allowIgnore, long repeatable_time) {
+        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable_time);
         this.level = level;
         this.onlyNewCities = onlyNewCities;
         this.require_n_offensives = require_n_offensives;
@@ -101,20 +101,33 @@ public class InfraTemplate extends AGrantTemplate<Double>{
 
     @Override
     public String getCommandString(String name, String allowedRecipients, String econRole, String selfRole, String bracket, String useReceiverBracket, String maxTotal, String maxDay, String maxGranterDay, String maxGranterTotal, String allowExpire, String allowDecay, String allowIgnore, String repeatable) {
-        return CM.grant_template.create.infra.cmd.create(name, allowedRecipients,
-                level + "", onlyNewCities ? "true" : null,
-                require_n_offensives > 0 ? "true" : null,
-                allow_rebuild ? "true" : null, econRole, selfRole, bracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, allowExpire, allowDecay, allowIgnore, repeatable, null).toString();
+        return CM.grant_template.create.infra.cmd.name(name).allowedRecipients(allowedRecipients).level(
+                level + "").onlyNewCities(
+                onlyNewCities ? "true" : null).requireNOffensives(
+                require_n_offensives > 0 ? "true" : null).allowRebuild(
+                allow_rebuild ? "true" : null).econRole(
+                econRole).selfRole(
+                selfRole).bracket(
+                bracket).useReceiverBracket(
+                useReceiverBracket).maxTotal(
+                maxTotal).maxDay(
+                maxDay).maxGranterDay(
+                maxGranterDay).maxGranterTotal(
+                maxGranterTotal).expireTime(
+                allowExpire).decayTime(
+                allowDecay).allowIgnore(
+                allowIgnore).repeatable_time(
+                repeatable).toString();
     }
 
     @Override
-    public List<Grant.Requirement> getDefaultRequirements(@Nullable DBNation sender, @Nullable DBNation receiver, Double parsed) {
-        List<Grant.Requirement> list = super.getDefaultRequirements(sender, receiver, parsed);
-        list.addAll(getRequirements(sender, receiver, this, parsed));
+    public List<Grant.Requirement> getDefaultRequirements(GuildDB db, @Nullable DBNation sender, @Nullable DBNation receiver, Double parsed, boolean confirm) {
+        List<Grant.Requirement> list = super.getDefaultRequirements(db, sender, receiver, parsed, confirm);
+        list.addAll(getRequirements(db, sender, receiver, this, parsed));
         return list;
     }
 
-    public static List<Grant.Requirement> getRequirements(DBNation sender, DBNation receiver, InfraTemplate template, Double parsed) {
+    public static List<Grant.Requirement> getRequirements(GuildDB db, DBNation sender, DBNation receiver, InfraTemplate template, Double parsed) {
         if (parsed == null && template != null) parsed = (double) template.level;
         List<Grant.Requirement> list = new ArrayList<>();
 
@@ -122,6 +135,7 @@ public class InfraTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Infra granted must NOT exceed: " + (template == null ? "`{level}`" : MathMan.format(template.level)), false, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation nation) {
+                if (template == null) return true;
                 return finalParsed == null || finalParsed.longValue() <= template.level;
             }
         }));
@@ -130,7 +144,6 @@ public class InfraTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Requires 0 wars against nations stronger or with NRF/MLP", false, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-
                 Set<DBWar> wars = receiver.getActiveWars();
 
                 for(DBWar war : wars) {
@@ -161,7 +174,6 @@ public class InfraTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Requires the project: `" + Projects.CENTER_FOR_CIVIL_ENGINEERING.name() + "`", true, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-
                 return receiver.hasProject(Projects.CENTER_FOR_CIVIL_ENGINEERING);
             }
         }));
@@ -186,8 +198,7 @@ public class InfraTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Nation must have purchased a city in the past 10 days (when `onlyNewCities: True`)", true, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-
-                if(template.onlyNewCities)
+                if(template != null && template.onlyNewCities)
                     return receiver.getCitiesSince(TimeUtil.getTimeFromTurn(TimeUtil.getTurn() - 120)) > 0;
                 else
                     return true;
@@ -199,7 +210,7 @@ public class InfraTemplate extends AGrantTemplate<Double>{
 
     public Map<Integer, Map<Long, Double>> getTopCityInfraGrant(DBNation receiver) {
 
-        List<Transaction2> transactions = receiver.getTransactions(0, true);
+        List<Transaction2> transactions = receiver.getTransactions(-1, true);
 
         Map<Integer, Map<Long, Double>> grants = Grant.getInfraGrantsByCityByDate(receiver, transactions);
 

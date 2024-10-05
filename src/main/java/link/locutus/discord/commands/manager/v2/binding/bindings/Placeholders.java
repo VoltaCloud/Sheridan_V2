@@ -4,8 +4,8 @@ import com.google.gson.reflect.TypeToken;
 import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.commands.manager.v2.binding.BindingHelper;
-import link.locutus.discord.commands.manager.v2.binding.FunctionProviderParser;
 import link.locutus.discord.commands.manager.v2.binding.Key;
 import link.locutus.discord.commands.manager.v2.binding.LocalValueStore;
 import link.locutus.discord.commands.manager.v2.binding.MethodParser;
@@ -13,6 +13,7 @@ import link.locutus.discord.commands.manager.v2.binding.Parser;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Binding;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
 import link.locutus.discord.commands.manager.v2.binding.validator.ValidatorStore;
 import link.locutus.discord.commands.manager.v2.command.*;
@@ -22,7 +23,6 @@ import link.locutus.discord.commands.manager.v2.impl.pw.filter.PlaceholdersMap;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.perm.PermissionHandler;
 import link.locutus.discord.db.GuildDB;
-import link.locutus.discord.db.entities.Coalition;
 import link.locutus.discord.db.entities.SelectionAlias;
 import link.locutus.discord.db.entities.SheetTemplate;
 import link.locutus.discord.db.entities.DBNation;
@@ -30,10 +30,7 @@ import link.locutus.discord.util.StringMan;
 import link.locutus.discord.util.math.ArrayUtil;
 import link.locutus.discord.util.math.LazyMathEntity;
 import link.locutus.discord.util.math.ReflectionUtil;
-import link.locutus.discord.web.WebUtil;
-import link.locutus.discord.web.commands.HtmlInput;
 import net.dv8tion.jda.api.entities.Guild;
-import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.User;
 import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.commons.lang3.math.NumberUtils;
@@ -41,10 +38,9 @@ import org.apache.commons.lang3.tuple.Triple;
 import org.json.JSONObject;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -85,6 +81,10 @@ public abstract class Placeholders<T> extends BindingHelper {
 //        new PWType2Math().register(type2Math);
         return this;
     }
+
+    public abstract Set<String> getSheetColumns();
+
+    public abstract Set<SelectorInfo> getSelectorInfo();
 
     public Class<T> getType() {
         return instanceType;
@@ -222,7 +222,6 @@ public abstract class Placeholders<T> extends BindingHelper {
             }
         }
         for (TypedFunction<T, String> column : columnsNonNull) {
-            System.out.println("Add `" + column.getName() + "` | " + column.toString());
             sheet.columns.add(column.getName());
         }
         db.getSheetManager().addSheetTemplate(sheet);
@@ -239,13 +238,12 @@ public abstract class Placeholders<T> extends BindingHelper {
         Parser existing = store.get(key);
         if (existing != null) {
             if (existing instanceof MethodParser<?> mp) {
-                System.out.println("Existing: " + mp.getMethod().getDeclaringClass().getSimpleName() + " | " + mp.getMethod().getName());
+                Logg.text("Existing: " + mp.getMethod().getDeclaringClass().getSimpleName() + " | " + mp.getMethod().getName());
             } else {
-                System.out.println("Existing: " + key);
+                Logg.text("Existing: " + key);
             }
             return;
         }
-        System.out.println("Registering: " + key);
         store.addParser(key, parser);
     }
 
@@ -304,8 +302,8 @@ public abstract class Placeholders<T> extends BindingHelper {
         ParametricCallable callable = get(cmd);
         StringBuilder html = new StringBuilder(callable.toBasicHtml(store));
         html.append("<select name=\"filter-operator\" for=\"").append(parentId).append("\" class=\"form-control\">");
-        for (Operation value : Operation.values()) {
-            String selected = value == Operation.EQUAL ? "selected=\"selected\"" : "";
+        for (MathOperation value : MathOperation.values()) {
+            String selected = value == MathOperation.EQUAL ? "selected=\"selected\"" : "";
             html.append("<option value=\"").append(value.code).append("\" ").append(selected).append(">").append(StringEscapeUtils.escapeHtml4(value.code)).append("</option>");
         }
         html.append("</select>");
@@ -348,8 +346,8 @@ public abstract class Placeholders<T> extends BindingHelper {
         return parseSet(store, input);
     }
 
-    private static Triple<String, Operation, String> opSplit(String input) {
-        for (Operation op : Operation.values()) {
+    private static Triple<String, MathOperation, String> opSplit(String input) {
+        for (MathOperation op : MathOperation.values()) {
             List<String> split = StringMan.split(input, op.code, 2);
             if (split.size() == 2) {
                 return Triple.of(split.get(0), op, split.get(1));
@@ -359,7 +357,7 @@ public abstract class Placeholders<T> extends BindingHelper {
     }
 
     private Predicate<T> getSingleFilter(ValueStore store, String input) {
-        TypedFunction<T, ?> placeholder = formatRecursively(store, input, null, 0, true);
+        TypedFunction<T, ?> placeholder = formatRecursively(store, input, null, 0, false, true);
         if (placeholder == null) {
             throw throwUnknownCommand(input);
         }
@@ -419,65 +417,67 @@ public abstract class Placeholders<T> extends BindingHelper {
                 s -> getSingleFilter(store2, s));
     }
 
-    public TypedFunction<T, ?> formatRecursively(ValueStore store, String input, ParameterData param, int depth, boolean throwError) {
+    public TypedFunction<T, ?> formatRecursively(ValueStore store, String input, ParameterData param, int depth, boolean skipFormat, boolean throwError) {
         input = input.trim();
         int currentIndex = 0;
 
         List<String> sections = new ArrayList<>();
         Map<String, TypedFunction<T, ?>> functions = new LinkedHashMap<>();
 
+        boolean check = !skipFormat && (param == null || param.getAnnotation(NoFormat.class) == null);
         boolean hasMath = false;
         boolean hasNonMath = false;
         boolean hasCurlyBracket = false;
         boolean hasPlaceholder = false;
         boolean hasNonPlaceholder = false;
 
-        while (currentIndex < input.length()) {
-            char currentChar = input.charAt(currentIndex);
-            if (currentChar != '{') {
-                sections.add("" +currentChar);
-                currentIndex++;
-                switch (currentChar) {
-                    case '+', '-', '*', '/', '^', '%', '=', '>', '<', '?' -> {
-                        hasMath = true;
-                    }
-                    case '(', ')', ' ', '!', 'e', 'E', '.', ':' -> {
-
-                    }
-                    default -> {
-                        if (!Character.isDigit(currentChar)) {
-                            hasNonMath = true;
-                        }
-                    }
-                };
-            } else {
-                hasCurlyBracket = true;
-                // Find the matching closing curly brace
-                int closingBraceIndex = StringMan.findMatchingBracket(input, currentIndex);
-                if (closingBraceIndex != -1) {
-                    String fullContent = input.substring(currentIndex, closingBraceIndex + 1);
-                    String functionContent = input.substring(currentIndex + 1, closingBraceIndex);
-                    sections.add(fullContent);
-                    if (!functions.containsKey(fullContent)) {
-                        TypedFunction<T, ?> functionResult = evaluateFunction(store, functionContent, depth, throwError);
-                        if (functionResult != null) {
-                            functions.put(fullContent, functionResult);
-                            hasPlaceholder = true;
-                        } else {
-                            hasNonPlaceholder = true;
-                        }
-                    }
-                    currentIndex = closingBraceIndex + 1;
-                } else {
-                    if (throwError) {
-                        throw new IllegalArgumentException("Invalid input: Missing closing curly brace: `" + input + "`");
-                    }
+        if (check) {
+            while (currentIndex < input.length()) {
+                char currentChar = input.charAt(currentIndex);
+                if (currentChar != '{') {
+                    sections.add("" + currentChar);
                     currentIndex++;
+                    switch (currentChar) {
+                        case '+', '-', '*', '/', '^', '%', '=', '>', '<', '?' -> {
+                            hasMath = true;
+                        }
+                        case '(', ')', ' ', '!', 'e', 'E', '.', ':' -> {
+
+                        }
+                        default -> {
+                            if (!Character.isDigit(currentChar)) {
+                                hasNonMath = true;
+                            }
+                        }
+                    }
+                    ;
+                } else {
+                    hasCurlyBracket = true;
+                    // Find the matching closing curly brace
+                    int closingBraceIndex = StringMan.findMatchingBracket(input, currentIndex);
+                    if (closingBraceIndex != -1) {
+                        String fullContent = input.substring(currentIndex, closingBraceIndex + 1);
+                        String functionContent = input.substring(currentIndex + 1, closingBraceIndex);
+                        sections.add(fullContent);
+                        if (!functions.containsKey(fullContent)) {
+                            TypedFunction<T, ?> functionResult = evaluateFunction(store, functionContent, depth, throwError);
+                            if (functionResult != null) {
+                                functions.put(fullContent, functionResult);
+                                hasPlaceholder = true;
+                            } else {
+                                hasNonPlaceholder = true;
+                            }
+                        }
+                        currentIndex = closingBraceIndex + 1;
+                    } else {
+                        if (throwError) {
+                            throw new IllegalArgumentException("Invalid input: Missing closing curly brace: `" + input + "`");
+                        }
+                        currentIndex++;
+                    }
                 }
             }
         }
-
-        System.out.println("Input " + input + " | " + hasMath + " | " + hasNonMath);
 
         String errorMsg = null;
         if (hasMath) {
@@ -536,10 +536,8 @@ public abstract class Placeholders<T> extends BindingHelper {
             // get function
             TypedFunction<T, ?> function = functions.get(section);
             if (function != null) {
-                System.out.println("Return function 1:" + function.getName() + " | " + function.getType());
                 return function;
             }
-            System.out.println("Return non function section " + section);
             return new ResolvedFunction<>(String.class, section, section);
         }
         boolean isResolved = functions.isEmpty() || functions.values().stream().allMatch(ResolvedFunction.class::isInstance);
@@ -696,7 +694,16 @@ public abstract class Placeholders<T> extends BindingHelper {
             }
             Placeholders<T> placeholders = this;
             if (previousFunc != null) {
-                placeholders = Locutus.cmd().getV2().getPlaceholders().get((Class) previousFunc.getType());
+                Type type = previousFunc.getType();
+                if (type instanceof Class) {
+                    placeholders = Locutus.cmd().getV2().getPlaceholders().get((Class) type);
+                } else {
+                    TypedFunction<T, ?> result = handleParameterized(store, functionName, argumentString, previousFunc, depth, throwError);
+                    if (result != null) {
+                        previousFunc = result;
+                        continue;
+                    }
+                }
                 if (placeholders == null) {
                     throw new IllegalArgumentException("Cannot call `" + arg + "` on function: `" + previousFunc.getName() + "` as return type is not public: `" + ((Class<?>) previousFunc.getType()).getSimpleName() + "`");
                 }
@@ -717,7 +724,7 @@ public abstract class Placeholders<T> extends BindingHelper {
                     ParameterData param = entry.getValue();
                     String argumentName = entry.getKey();
                     if (explodedArguments.containsKey(argumentName)) {
-                        TypedFunction<T, ?> argumentValue = formatRecursively(store, explodedArguments.get(argumentName), param, depth + 1, throwError);
+                        TypedFunction<T, ?> argumentValue = formatRecursively(store, explodedArguments.get(argumentName), param, depth + 1, false, throwError);
                         actualArguments.put(argumentName, argumentValue);
                     }
                 }
@@ -737,14 +744,42 @@ public abstract class Placeholders<T> extends BindingHelper {
         return previousFunc;
     }
 
+    private TypedFunction<T, ?> handleParameterized(ValueStore store, String functionName, String argumentString, TypedFunction<T, ?> previousFunc, int depth, boolean throwError) {
+        if (argumentString != null && !argumentString.isEmpty()) return null;
+        Type type = previousFunc.getType();
+        if (!(type instanceof ParameterizedType pt)) return null;
+        Type rawType = pt.getRawType();
+        if (!(rawType instanceof Class rawClass)) return null;
+//            if (Map.class.isAssignableFrom(rawClass)) {
+        if (!rawClass.isAssignableFrom(Map.class)) return null;
+        Type[] args = pt.getActualTypeArguments();
+        Type keyType = args[0];
+        Type valueType = args[1];
+        if (!(keyType instanceof Class keyClass && keyClass.isEnum())) return null;
+        // get enum options
+        Enum<?>[] enumConstants = (Enum<?>[]) keyClass.getEnumConstants();
+        // if any enum constant equals ignore case
+        for (Enum<?> enumConstant : enumConstants) {
+            if (enumConstant.name().equalsIgnoreCase(functionName)) {
+                Function<T, Object> getValue = f -> {
+                    Object key = enumConstant;
+                    Map<T, ?> map = (Map<T, ?>) previousFunc.applyCached(f);
+                    return map.get(key);
+                };
+                return TypedFunction.createParent(valueType, getValue, functionName, previousFunc);
+            }
+        }
+        return null;
+    }
+
     private TypedFunction<T, ?> format(ValueStore store, ParametricCallable command, Map<String, TypedFunction<T, ?>> arguments) {
         Map<String, Object> resolvedArgs = new Object2ObjectLinkedOpenHashMap<>();
         Map<T, Map<String, Object>> resolvedByEntity = new Object2ObjectLinkedOpenHashMap<>();
         boolean isResolved = true;
         for (Map.Entry<String, TypedFunction<T, ?>> entry : arguments.entrySet()) {
             TypedFunction<T, ?> func = entry.getValue();
-            if (func instanceof ResolvedFunction f) {
-                resolvedArgs.put(entry.getKey(), f.get());
+            if (func.isResolved()) {
+                resolvedArgs.put(entry.getKey(), func.get(null));
                 continue;
             }
             isResolved = false;
@@ -756,7 +791,7 @@ public abstract class Placeholders<T> extends BindingHelper {
             if (!finalIsResolved) {
                 finalArgs = resolvedByEntity.get(f);
                 if (finalArgs == null) {
-                    finalArgs = new Object2ObjectLinkedOpenHashMap<>();
+                    finalArgs = new Object2ObjectLinkedOpenHashMap<>(resolvedArgs);
                     resolvedByEntity.put(f, finalArgs);
                     for (Map.Entry<String, TypedFunction<T, ?>> entry : arguments.entrySet()) {
                         String argName = entry.getKey();
@@ -881,7 +916,7 @@ public abstract class Placeholders<T> extends BindingHelper {
     @Binding(value = "Format text containing placeholders")
     public TypedFunction<T, Double> getDoubleFunction(ValueStore store, String arg) {
         arg = wrapHashLegacy(arg);
-        TypedFunction<T, ?> result = this.formatRecursively(store, arg, null, 0, true);
+        TypedFunction<T, ?> result = this.formatRecursively(store, arg, null, 0, false, true);
         Class type = (Class) result.getType();
         if (type == boolean.class || type == Boolean.class) {
             return TypedFunction.createParent(Double.class, t -> {
@@ -908,7 +943,7 @@ public abstract class Placeholders<T> extends BindingHelper {
             arg = arg.substring(1);
         }
         if (cache != null) store.addProvider(cache);
-        TypedFunction<T, ?> result = this.formatRecursively(store, arg, null, 0, throwError);
+        TypedFunction<T, ?> result = this.formatRecursively(store, arg, null, 0, false, throwError);
         if (result.isResolved()) {
             Object value = result.applyCached(null);
             String valueStr = value == null ? null : value.toString();

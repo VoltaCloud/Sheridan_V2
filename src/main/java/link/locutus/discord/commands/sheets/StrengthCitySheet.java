@@ -3,7 +3,9 @@ package link.locutus.discord.commands.sheets;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.guild.SheetKey;
@@ -34,13 +36,18 @@ public class StrengthCitySheet extends Command {
     }
 
     @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.stats_tier.strengthTierGraph.cmd.attachCsv("true"));
+    }
+
+    @Override
     public String help() {
         return super.help() + " <coalition-1> <coalition-2> ...";
     }
 
     @Override
     public boolean checkPermission(Guild server, User user) {
-        return Locutus.imp().getGuildDB(server).isValidAlliance() && Roles.MILCOM.has(user, server);
+        return server != null && Locutus.imp().getGuildDB(server).isValidAlliance() && Roles.MILCOM.has(user, server);
     }
 
     @Override

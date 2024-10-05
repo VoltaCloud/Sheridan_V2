@@ -1,8 +1,11 @@
 package link.locutus.discord.commands.manager.v2.command;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import link.locutus.discord.commands.manager.v2.binding.Key;
 import link.locutus.discord.commands.manager.v2.binding.Parser;
-import link.locutus.discord.commands.manager.v2.binding.annotation.Binding;
+import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.util.StringMan;
 
 import java.lang.annotation.Annotation;
@@ -18,6 +21,38 @@ public class ParameterData {
     private Parser binding;
     private String desc;
     private int group = -1;
+
+    public JsonObject toJson() {
+        JsonObject arg = new JsonObject();
+        arg.addProperty("name", getName());
+        if (optional) arg.addProperty("optional", true);
+        if (isFlag()) arg.addProperty("flag", getFlag());
+        if (this.desc != null && !desc.isEmpty()) arg.addProperty("desc", desc);
+        if (group != -1) arg.addProperty("group", group);
+        String webType = binding.getWebTypeStr();
+        arg.addProperty("type", webType);
+        if (defaultValue != null && defaultValue.length != 0) {
+            arg.addProperty("default", getDefaultValueString());
+        }
+        ArgChoice choiceAnn = getAnnotation(ArgChoice.class);
+        if (choiceAnn != null) {
+            JsonArray choices = new JsonArray();
+            for (String choice : choiceAnn.value()) choices.add(choice);
+            arg.add("choices", choices);
+        }
+        Range range = getAnnotation(Range.class);
+        if (range != null) {
+            if (range.min() != Double.NEGATIVE_INFINITY)
+                arg.addProperty("min", range.min());
+            if (range.max() != Double.POSITIVE_INFINITY)
+                arg.addProperty("max", range.max());
+        }
+        Filter filter = getAnnotation(Filter.class);
+        if (filter != null) {
+            arg.addProperty("filter", filter.value());
+        }
+        return arg;
+    }
 
     public Type getType() {
         return type;

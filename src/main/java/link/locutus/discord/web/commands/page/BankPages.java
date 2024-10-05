@@ -72,7 +72,7 @@ public class BankPages {
             nations.removeIf(n -> n.getPosition() <= 1);
         } else {
             Role role = Roles.MEMBER.toRole(guild);
-            if (role == null) throw new IllegalArgumentException("No " + GuildKey.ALLIANCE_ID.getCommandMention() + " set, or " + CM.role.setAlias.cmd.create(Roles.MEMBER.name(), "", null, null) + " set");
+            if (role == null) throw new IllegalArgumentException("No " + GuildKey.ALLIANCE_ID.getCommandMention() + " set, or " + CM.role.setAlias.cmd.locutusRole(Roles.MEMBER.name()).discordRole("") + " set");
             nations = new ArrayList<>();
             for (Member member : guild.getMembersWithRoles(role)) {
                 DBNation nation = DiscordUtil.getNation(member.getUser());
@@ -88,9 +88,7 @@ public class BankPages {
             long start2 = System.currentTimeMillis();
 
             List<String> row = new ArrayList<>(header);
-            long start = System.currentTimeMillis();
             Map<DepositType, double[]> deposits = nation.getDeposits(db, tracked, !noTaxBase, !ignoreOffset, -1, 0L, true);
-            long diff = System.currentTimeMillis() - start;
 
             row.set(0, MarkupUtil.htmlUrl(nation.getNation(), nation.getUrl()));
             row.set(1, MathMan.format(nation.getCities()));

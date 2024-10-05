@@ -13,6 +13,7 @@ import it.unimi.dsi.fastutil.io.FastByteArrayOutputStream;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.enums.city.ICity;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PrimitiveBindings;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.apiv1.enums.city.JavaCity;
@@ -63,7 +64,8 @@ public enum ResourceType {
                     factor = 400;
                 }
                 if (hasProject.test(Projects.FALLOUT_SHELTER)) {
-                    rads = Math.max(0.1, rads);
+                    if (rads < 0.15) rads = 0.15;
+                    else rads = Math.min(1, rads + 0.15);
                 } else {
                     rads = Math.max(0, rads);
                 }
@@ -85,7 +87,7 @@ public enum ResourceType {
     IRON("iron", "withiron", 14, 1600, 12, 3, 10),
     BAUXITE("bauxite", "withbauxite", 9, 1600, 12, 3, 10),
     GASOLINE("gasoline", "withgasoline", 13, 4000, 32, 6, 5, 2, () -> Projects.EMERGENCY_GASOLINE_RESERVE, 3, OIL),
-    MUNITIONS("munitions", "withmunitions", 19, 3500 , 32, 18, 5, 1.34, () -> Projects.ARMS_STOCKPILE, 6, LEAD),
+    MUNITIONS("munitions", "withmunitions", 19, 3500 , 32, 18, 5, 1.2, () -> Projects.ARMS_STOCKPILE, 6, LEAD),
     STEEL("steel", "withsteel", 23, 4000, 40, 9, 5, 1.36, () -> Projects.IRON_WORKS, 3, IRON, COAL),
     ALUMINUM("aluminum", "withaluminum", 8, 2500, 40, 9, 5, 1.36, () -> Projects.BAUXITEWORKS, 3, BAUXITE);
     private static final Type RESOURCE_TYPE = new TypeToken<Map<ResourceType, Double>>() {}.getType();
@@ -161,6 +163,9 @@ public enum ResourceType {
     }
 
     public static Map<ResourceType, Double> parseResources(String arg) {
+        if (arg.endsWith("},")) {
+            arg = arg.substring(0, arg.length() - 1);
+        }
         boolean allowBodmas = arg.contains("{") && StringMan.containsAny("+-*/^%", arg.replaceAll("\\{[^}]+}", ""));
         return parseResources(arg, allowBodmas);
     }
@@ -168,6 +173,11 @@ public enum ResourceType {
     public static Map<ResourceType, Double> parseResources(String arg, boolean allowBodmas) {
         if (MathMan.isInteger(arg)) {
             throw new IllegalArgumentException("Please use `$" + arg + "` or `money=" + arg + "` for money, not `" + arg + "`");
+        }
+        if (arg.contains(" AM ") || arg.contains(" PM ")) {
+            arg = arg.replaceAll("([0-9]{1,2}:[0-9]{2})[ ](AM|PM)", "")
+                    .replace("\n", " ")
+                    .replaceAll("[ ]+", " ");
         }
         if (arg.contains("---+") && arg.contains("-+-")) {
             arg = arg.replace("-+-", "---");
@@ -254,7 +264,6 @@ public enum ResourceType {
                 return RESOURCE_GSON.fromJson(f, RESOURCE_TYPE);
             };
             if (allowBodmas) {
-                System.out.println("Input " + arg);
                 List<ArrayUtil.DoubleArray> resources = (ArrayUtil.calculate(arg, arg1 -> {
                     if (!arg1.contains("{")) {
                         return new ArrayUtil.DoubleArray(PrimitiveBindings.Double(arg1));
@@ -588,6 +597,7 @@ public enum ResourceType {
             case "CRE":
             case "CRED":
             case "CREDI":
+            case "CREDIT":
                 return CREDITS;
             case "F":
             case "FO":
@@ -734,7 +744,6 @@ public enum ResourceType {
     public static boolean equals(Map<ResourceType, Double> amtA, Map<ResourceType, Double> amtB) {
         for (ResourceType type : ResourceType.values) {
             if (Math.round(100 * (amtA.getOrDefault(type, 0d) - amtB.getOrDefault(type, 0d))) != 0) {
-                System.out.println(type + " | " + amtA.getOrDefault(type, 0d) + " | " + amtB.getOrDefault(type, 0d) + " | " + Math.round(100 * (amtA.getOrDefault(type, 0d) - amtB.getOrDefault(type, 0d))));
                 return false;
             }
         }
@@ -818,6 +827,18 @@ public enum ResourceType {
 
     public static class ResourcesBuilder {
         private double[] resources = null;
+
+        public String toString() {
+            return resourcesToString(build());
+        }
+
+        public double convertedTotal() {
+            return ResourceType.convertedTotal(build());
+        }
+
+        public String convertedStr() {
+            return "~$" + MathMan.format(convertedTotal());
+        }
 
         private double[] getResources() {
             if (resources == null) resources = getBuffer();
@@ -992,12 +1013,12 @@ public enum ResourceType {
 
     @Command(desc = "If this is a raw resource")
     public boolean isRaw() {
-        return inputs == null || inputs.length == 0 && cap > 0;
+        return inputs.length == 0 && cap > 0;
     }
 
     @Command(desc = "If this is a manufactured resource")
     public boolean isManufactured() {
-        return inputs != null && inputs.length > 0;
+        return inputs.length > 0;
     }
 
     @Command(desc = "The pollution modifier for this resource's production")
@@ -1021,7 +1042,7 @@ public enum ResourceType {
     }
 
     public double getInput(Continent continent, double rads, Predicate<Project> hasProject, ICity city, int improvements) {
-        if (inputs == null) return 0;
+        if (inputs.length == 0) return 0;
 
         double base = getBaseProduction(continent, rads, hasProject, city.getLand(), -1);
         base = (base * baseProductionInverse) * baseInput;
@@ -1093,7 +1114,7 @@ public enum ResourceType {
     }
 
     @Command(desc = "If this resource is on the given continent")
-    public boolean canProduceInAny(Set<Continent> continents) {
+    public boolean canProduceInAny(@NoFormat Set<Continent> continents) {
         Building building = getBuilding();
         if (building == null) return false;
         for (Continent continent : continents) {
@@ -1103,7 +1124,7 @@ public enum ResourceType {
     }
 
     @Command(desc = "The total production of resources for nations")
-    public Map<ResourceType, Double> getProduction(Set<DBNation> nations, boolean includeNegatives) {
+    public Map<ResourceType, Double> getProduction(@NoFormat Set<DBNation> nations, boolean includeNegatives) {
         double[] total = ResourceType.getBuffer();
         for (DBNation nation : nations) {
             double[] revenue = nation.getRevenue();

@@ -6,6 +6,7 @@ import link.locutus.discord.apiv1.enums.EscrowMode;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PrimitiveBindings;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.PWBindings;
@@ -36,6 +37,10 @@ public class TransferCommand extends Command {
         super("transfer", "withdraw", CommandCategory.ECON);
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.transfer.resources.cmd);
+    }
     @Override
     public String help() {
         return Settings.commandPrefix(true) + "transfer <alliance|nation> <resource> <amount> <note>";
@@ -123,23 +128,21 @@ public class TransferCommand extends Command {
 
         UUID token = null;
         // String receiver, String transfer, String depositType, String nationAccount, String senderAlliance, String allianceAccount, String onlyMissingFunds, String expire, String token, String convertCash, String bypassChecks
-        JSONObject command = CM.transfer.resources.cmd.create(
-                receiver.getUrl(),
-                ResourceType.resourcesToString(transfer),
-                depositType.toString(),
-                nationAccount != null ? nationAccount.getUrl() : null,
-                allianceAccount != null ? allianceAccount.getUrl() : null,
-                offshoreAccount != null ? offshoreAccount.getUrl() : null,
-                taxAccount != null ? taxAccount.getQualifiedId() : null,
-                null,
-                String.valueOf(onlyMissingFunds),
-                expire == null ? null : TimeUtil.secToTime(TimeUnit.MILLISECONDS, expire),
-                decay == null ? null : TimeUtil.secToTime(TimeUnit.MILLISECONDS, decay),
-                token == null ? null : token.toString(),
-                String.valueOf(convertCash),
-                escrowMode == null ? null : escrowMode.name(),
-                String.valueOf(bypassChecks),
-                null
+        JSONObject command = CM.transfer.resources.cmd.receiver(
+                receiver.getUrl()).transfer(
+                ResourceType.resourcesToString(transfer)).depositType(
+                depositType.toString()).nationAccount(
+                nationAccount != null ? nationAccount.getUrl() : null).senderAlliance(
+                allianceAccount != null ? allianceAccount.getUrl() : null).allianceAccount(
+                offshoreAccount != null ? offshoreAccount.getUrl() : null).taxAccount(
+                taxAccount != null ? taxAccount.getQualifiedId() : null).onlyMissingFunds(
+                String.valueOf(onlyMissingFunds)).expire(
+                expire == null ? null : TimeUtil.secToTime(TimeUnit.MILLISECONDS, expire)).decay(
+                decay == null ? null : TimeUtil.secToTime(TimeUnit.MILLISECONDS, decay)).token(
+                token == null ? null : token.toString()).convertCash(
+                String.valueOf(convertCash)).escrow_mode(
+                escrowMode == null ? null : escrowMode.name()).bypassChecks(
+                String.valueOf(bypassChecks)
         ).toJson();
 
         return BankCommands.transfer(channel, command, author, me, guildDb, receiver, transfer, depositType, nationAccount, allianceAccount, offshoreAccount, taxAccount, false, onlyMissingFunds, expire, decay, token, convertCash, escrowMode, bypassChecks, false);

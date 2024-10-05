@@ -195,7 +195,6 @@ public class PrimitiveBindings extends BindingHelper {
             }
         }
         List<String> result = new ArrayList<>(StringMan.split(string, splitChar));
-        System.out.println("Split `" + splitChar + "` | " + result.size());
         for (int i = 0; i < result.size(); i++) {
             String s = result.get(i);
             if (s.length() <= 2) continue;
@@ -242,7 +241,11 @@ public class PrimitiveBindings extends BindingHelper {
             Date parsed = format.parse(argument);
             return parsed.getTime();
         }
-        return System.currentTimeMillis() - TimeUtil.timeToSec(argument) * 1000;
+        try {
+            return System.currentTimeMillis() - TimeUtil.timeToSec(argument) * 1000;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid timestamp: `" + argument + "`: " + e.getMessage());
+        }
     }
 
     @Binding

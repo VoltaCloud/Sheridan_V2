@@ -4,6 +4,7 @@ import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PrimitiveBindings;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.PWBindings;
@@ -26,10 +27,14 @@ import java.util.concurrent.TimeUnit;
 
 public class Who extends Command {
 
-    public Who(SpyCommand spyCmd) {
+    public Who() {
         super("pnw-who", "who", "pw-who", "pw-info", "how", "where", "when", "why", "whois", CommandCategory.GAME_INFO_AND_TOOLS);
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.who.cmd);
+    }
     @Override
     public String help() {
         return Settings.commandPrefix(true) + "pw-who <nation|alliance|coalition>";
@@ -59,22 +64,19 @@ public class Who extends Command {
         Long date = DiscordUtil.parseArgFunc(args, "date", (ThrowingFunction<String, Long>) PrimitiveBindings::timestamp);
         Integer page = DiscordUtil.parseArgInt(args, "page");
         String arg0 = StringMan.join(args, " ");
-        System.out.println("Args " + arg0);
         Set<NationOrAlliance> nations = PWBindings.nationOrAlliance(null, guild, arg0, author, me);
         if (args.isEmpty()) {
             return "Usage: `" + Settings.commandPrefix(true) + "pnw-who <discord-user>`";
         }
         // String nationOrAlliances, String sortBy, String list, String listAlliances, String listRawUserIds, String listMentions, String listInfo, String listChannels, String page
-        CM.who command = CM.who.cmd.create(
-                arg0,
-                null,
-                flags.contains('l') ? "True" : null,
-                flags.contains('a') ? "True" : null,
-                flags.contains('r') ? "True" : null,
-                flags.contains('m') ? "True" : null,
-                flags.contains('i') ? "True" : null,
-                flags.contains('c') ? "True" : null,
-                null,
+        CM.who command = CM.who.cmd.nationOrAlliances(
+                arg0).list(
+                flags.contains('l') ? "True" : null).listAlliances(
+                flags.contains('a') ? "True" : null).listRawUserIds(
+                flags.contains('r') ? "True" : null).listMentions(
+                flags.contains('m') ? "True" : null).listInfo(
+                flags.contains('i') ? "True" : null).listChannels(
+                flags.contains('c') ? "True" : null).page(
                 page == null ? null : page.toString()
         );
         GuildDB db = guild == null ? null : Locutus.imp().getGuildDB(guild);

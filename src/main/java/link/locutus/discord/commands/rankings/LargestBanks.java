@@ -3,8 +3,10 @@ package link.locutus.discord.commands.rankings;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
-import link.locutus.discord.commands.rankings.builder.SummedMapRankBuilder;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.commands.manager.v2.builder.SummedMapRankBuilder;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.entities.LootEntry;
@@ -25,6 +27,11 @@ public class LargestBanks extends Command {
     }
 
     @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.alliance.stats.loot_ranking.cmd.show_total("true"));
+    }
+
+    @Override
     public String help() {
         return super.help() + " <time>";
     }
@@ -37,10 +44,6 @@ public class LargestBanks extends Command {
     @Override
     public String onCommand(Guild guild, IMessageIO channel, User author, DBNation me, String fullCommandRaw, List<String> args, Set<Character> flags) throws Exception {
         if (args.size() != 1) return usage(args.size(), 1, channel);
-
-        long millis = TimeUtil.timeToSec(args.get(0)) * 1000L;
-        long cutOff = System.currentTimeMillis() - millis;
-
         Map<Integer, Double> total = new HashMap<>();
 
         for (DBAlliance alliance : Locutus.imp().getNationDB().getAlliances()) {
@@ -52,11 +55,6 @@ public class LargestBanks extends Command {
 
         SummedMapRankBuilder<Integer, ? extends Number> sorted = new SummedMapRankBuilder<>(total).sort();
         sorted.nameKeys(i -> PW.getName(i, true)).build(author, channel, fullCommandRaw, "AA bank");
-
-        for (Integer integer : sorted.get().keySet()) {
-            System.out.println(PW.getBBUrl(integer, true));
-        }
-
 
         return null;
     }

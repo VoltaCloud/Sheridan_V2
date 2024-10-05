@@ -12,6 +12,7 @@ import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
 import link.locutus.discord.commands.manager.v2.binding.bindings.Placeholders;
+import link.locutus.discord.commands.manager.v2.binding.bindings.SelectorInfo;
 import link.locutus.discord.commands.manager.v2.binding.bindings.TypedFunction;
 import link.locutus.discord.commands.manager.v2.binding.validator.ValidatorStore;
 import link.locutus.discord.commands.manager.v2.command.CommandCallable;
@@ -64,8 +65,58 @@ public class NationPlaceholders extends Placeholders<DBNation> {
     }
 
     @Override
+    public Set<SelectorInfo> getSelectorInfo() {
+        return new LinkedHashSet<>(List.of(
+                new SelectorInfo("nation:NATION_NAME", "nation:Borg", "A qualified nation name"),
+                new SelectorInfo("leader:NATION_NAME", "leader:Danzek", "A qualified leader name"),
+                new SelectorInfo("aa:ALLIANCE_NAME", "aa:Rose", "A qualified alliance name"),
+                new SelectorInfo("alliance:ALLIANCE_NAME", "alliance:Eclipse", "A qualified alliance name"),
+                new SelectorInfo("nation/id=NATION_ID", "nation/id=6", "A nation url"),
+                new SelectorInfo("alliance/id=ALLIANCE_ID", "alliance/id=790", "An alliance url"),
+                new SelectorInfo("coalition:COALITION", "coalition:allies", "A qualified coalition name"),
+                new SelectorInfo("~COALITION", "~enemies", "A coalition name"),
+                new SelectorInfo("NATION_NAME", "Borg", "An unqualified nation name"),
+                new SelectorInfo("LEADER_NAME", "Danzek", "An unqualified leader name"),
+                new SelectorInfo("NATION_ID", "189573", "A nation id"),
+                new SelectorInfo("ALLIANCE_ID", "790", "An alliance id"),
+                new SelectorInfo("@ROLE_MENTION", "@Member", "A discord role mention or name"),
+                new SelectorInfo("ROLE_ID", "123456789012345678", "A discord role id"),
+                new SelectorInfo("@USER_MENTION", "@xdnw", "A discord user mention or name"),
+                new SelectorInfo("USER_ID", "123456789012345678", "A discord user id"),
+                new SelectorInfo("https://politicsandwar.com/index.php?id=15&tax_id=TAX_ID", "https://politicsandwar.com/index.php?id=15&tax_id=1234", "A full tax url"),
+                new SelectorInfo("TAX_ID", "tax_id=1234", "A tax bracket id or url"),
+                new SelectorInfo("*", null, "All nations")
+        ));
+    }
+
+    @Override
+    public Set<String> getSheetColumns() {
+        return new LinkedHashSet<>(List.of("nation", "leader"));
+    }
+
+    @Override
     public String getName(DBNation o) {
         return o.getName();
+    }
+
+    @Override
+    public Set<DBNation> deserializeSelection(ValueStore store, String input) {
+        Set<DBNation> superSet = super.deserializeSelection(store, input);
+        List<Function<DBNation, Double>> sortCriteria = List.of(
+                n -> (double) n.getAlliance_id(),
+                n -> (double) n.getCities(),
+                n -> (double) n.getId()
+        );
+        return superSet.stream().sorted((n1, n2) -> {
+            for (Function<DBNation, Double> criteria : sortCriteria) {
+                double val1 = criteria.apply(n1);
+                double val2 = criteria.apply(n2);
+                if (val1 != val2) {
+                    return Double.compare(val1, val2);
+                }
+            }
+            return 0;
+        }).collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     @NoFormat
@@ -79,34 +130,34 @@ public class NationPlaceholders extends Placeholders<DBNation> {
     @Command(desc = "Add columns to a Nation sheet")
     @RolePermission(value = {Roles.INTERNAL_AFFAIRS_STAFF, Roles.MILCOM, Roles.ECON_STAFF, Roles.FOREIGN_AFFAIRS_STAFF, Roles.ECON, Roles.FOREIGN_AFFAIRS}, any = true)
     public String addColumns(@Me JSONObject command, @Me GuildDB db, @Me IMessageIO io, @Me User author, @Switch("s") SheetTemplate sheet,
-                             @Default TypedFunction<DBNation, String> column1,
-                             @Default TypedFunction<DBNation, String> column2,
-                             @Default TypedFunction<DBNation, String> column3,
-                             @Default TypedFunction<DBNation, String> column4,
-                             @Default TypedFunction<DBNation, String> column5,
-                             @Default TypedFunction<DBNation, String> column6,
-                             @Default TypedFunction<DBNation, String> column7,
-                             @Default TypedFunction<DBNation, String> column8,
-                             @Default TypedFunction<DBNation, String> column9,
-                             @Default TypedFunction<DBNation, String> column10,
-                             @Default TypedFunction<DBNation, String> column11,
-                             @Default TypedFunction<DBNation, String> column12,
-                             @Default TypedFunction<DBNation, String> column13,
-                             @Default TypedFunction<DBNation, String> column14,
-                             @Default TypedFunction<DBNation, String> column15,
-                             @Default TypedFunction<DBNation, String> column16,
-                             @Default TypedFunction<DBNation, String> column17,
-                             @Default TypedFunction<DBNation, String> column18,
-                             @Default TypedFunction<DBNation, String> column19,
-                             @Default TypedFunction<DBNation, String> column20,
-                             @Default TypedFunction<DBNation, String> column21,
-                             @Default TypedFunction<DBNation, String> column22,
-                             @Default TypedFunction<DBNation, String> column23,
-                             @Default TypedFunction<DBNation, String> column24) throws GeneralSecurityException, IOException {
+                             @Default TypedFunction<DBNation, String> a,
+                             @Default TypedFunction<DBNation, String> b,
+                             @Default TypedFunction<DBNation, String> c,
+                             @Default TypedFunction<DBNation, String> d,
+                             @Default TypedFunction<DBNation, String> e,
+                             @Default TypedFunction<DBNation, String> f,
+                             @Default TypedFunction<DBNation, String> g,
+                             @Default TypedFunction<DBNation, String> h,
+                             @Default TypedFunction<DBNation, String> i,
+                             @Default TypedFunction<DBNation, String> j,
+                             @Default TypedFunction<DBNation, String> k,
+                             @Default TypedFunction<DBNation, String> l,
+                             @Default TypedFunction<DBNation, String> m,
+                             @Default TypedFunction<DBNation, String> n,
+                             @Default TypedFunction<DBNation, String> o,
+                             @Default TypedFunction<DBNation, String> p,
+                             @Default TypedFunction<DBNation, String> q,
+                             @Default TypedFunction<DBNation, String> r,
+                             @Default TypedFunction<DBNation, String> s,
+                             @Default TypedFunction<DBNation, String> t,
+                             @Default TypedFunction<DBNation, String> u,
+                             @Default TypedFunction<DBNation, String> v,
+                             @Default TypedFunction<DBNation, String> w,
+                             @Default TypedFunction<DBNation, String> x) throws GeneralSecurityException, IOException {
         return Placeholders._addColumns(this, command,db, io, author, sheet,
-                column1, column2, column3, column4, column5, column6, column7, column8, column9, column10,
-                column11, column12, column13, column14, column15, column16, column17, column18, column19, column20,
-                column21, column22, column23, column24);
+                a, b, c, d, e, f, g, h, i, j,
+                k, l, m, n, o, p, q, r, s, t,
+                u, v, w, x);
     }
 
     @Override
@@ -122,7 +173,7 @@ public class NationPlaceholders extends Placeholders<DBNation> {
             try {
                 String id = cmd.aliases().get(0);
                 try {
-                    TypedFunction<DBNation, ?> typeFunction = formatRecursively(store, id, null, 0, false);
+                    TypedFunction<DBNation, ?> typeFunction = formatRecursively(store, id, null, 0, false, false);
                     if (typeFunction == null) continue;
                     NationAttribute metric = new NationAttribute(cmd.getPrimaryCommandId(), cmd.simpleDesc(), typeFunction.getType(), typeFunction);
                     result.add(metric);
@@ -139,13 +190,13 @@ public class NationPlaceholders extends Placeholders<DBNation> {
     }
 
     public NationAttribute getMetric(ValueStore<?> store, String id, boolean ignorePerms) {
-        TypedFunction<DBNation, ?> typeFunction = formatRecursively(store, "{" + id + "}", null, 0, true);
+        TypedFunction<DBNation, ?> typeFunction = formatRecursively(store, "{" + id + "}", null, 0, false,true);
         if (typeFunction == null) return null;
         return new NationAttribute<>(id, "", typeFunction.getType(), typeFunction);
     }
 
     public NationAttributeDouble getMetricDouble(ValueStore store, String id, boolean ignorePerms) {
-        TypedFunction<DBNation, ?> typeFunction = formatRecursively(store, "{" + id + "}", null, 0, true);
+        TypedFunction<DBNation, ?> typeFunction = formatRecursively(store, "{" + id + "}", null, 0, false, true);
         if (typeFunction == null) return null;
 
         TypedFunction<DBNation, ?> genericFunc = typeFunction;
@@ -206,7 +257,6 @@ public class NationPlaceholders extends Placeholders<DBNation> {
     @Override
     public Set<DBNation> parseSingleElem(ValueStore store, String name) {
         Set<DBNation> selection = PlaceholdersMap.getSelection(this, store, name);
-        System.out.println("Get selection `" + name + "` " + selection);
         if (selection != null) return selection;
         String nameLower = name.toLowerCase(Locale.ROOT);
         Guild guild = (Guild) store.getProvided(Key.of(Guild.class, Me.class), false);
@@ -238,11 +288,30 @@ public class NationPlaceholders extends Placeholders<DBNation> {
         } else if (nameLower.startsWith("<@&") && guild != null) {
             Role role = DiscordUtil.getRole(guild, name);
             return getByRole(guild, name, role);
+        } else if (nameLower.startsWith("<@") || nameLower.startsWith("<!@")) {
+            User user = DiscordUtil.getUser(nameLower);
+            if (user != null) {
+                DBNation nation = DiscordUtil.getNation(user);
+                if (nation == null) {
+                    throw new IllegalArgumentException("User `" + DiscordUtil.getFullUsername(user) + "` is not registered. See " + CM.register.cmd.toSlashMention());
+                }
+                return Set.of(nation);
+            }
         } else if (MathMan.isInteger(nameLower)) {
             long id = Long.parseLong(nameLower);
             if (id > Integer.MAX_VALUE && guild != null) {
+                User user = Locutus.imp().getDiscordApi().getUserById(id);
+                if (user != null) {
+                    DBNation nation = DiscordUtil.getNation(user);
+                    if (nation == null) {
+                        throw new IllegalArgumentException("User `" + DiscordUtil.getFullUsername(user) + "` is not registered. See " + CM.register.cmd.toSlashMention());
+                    }
+                    return Set.of(nation);
+                }
                 Role role = DiscordUtil.getRole(guild, name);
-                return getByRole(guild, name, role);
+                if (role != null) {
+                    return getByRole(guild, name, role);
+                }
             }
             DBNation nation = DBNation.getById((int) id);
             if (nation != null) return Set.of(nation);
@@ -316,7 +385,6 @@ public class NationPlaceholders extends Placeholders<DBNation> {
             int taxId = PW.parseTaxId(name);
             return f -> f.getTax_id() == taxId;
         }
-
         boolean containsAA = nameLower.contains("/alliance/");
         DBNation nation = containsAA ? null : DiscordUtil.parseNation(name, true);
         if (nation == null) {

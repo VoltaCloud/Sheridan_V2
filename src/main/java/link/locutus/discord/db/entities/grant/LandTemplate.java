@@ -32,12 +32,12 @@ public class LandTemplate extends AGrantTemplate<Double>{
                 rs.getLong("expire"),
                 rs.getLong("decay"),
                 rs.getBoolean("allow_ignore"),
-                rs.getBoolean("repeatable"));
+                rs.getLong("repeatable"));
     }
 
     // create new constructor  with typed parameters instead of resultset
-    public LandTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, long level, boolean onlyNewCities, long expiryOrZero, long decayOrZero, boolean allowIgnore, boolean repeatable) {
-        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable);
+    public LandTemplate(GuildDB db, boolean isEnabled, String name, NationFilter nationFilter, long econRole, long selfRole, int fromBracket, boolean useReceiverBracket, int maxTotal, int maxDay, int maxGranterDay, int maxGranterTotal, long dateCreated, long level, boolean onlyNewCities, long expiryOrZero, long decayOrZero, boolean allowIgnore, long repeatable_time) {
+        super(db, isEnabled, name, nationFilter, econRole, selfRole, fromBracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, dateCreated, expiryOrZero, decayOrZero, allowIgnore, repeatable_time);
         this.level = level;
         this.onlyNewCities = onlyNewCities;
     }
@@ -85,13 +85,27 @@ public class LandTemplate extends AGrantTemplate<Double>{
 
     @Override
     public String getCommandString(String name, String allowedRecipients, String econRole, String selfRole, String bracket, String useReceiverBracket, String maxTotal, String maxDay, String maxGranterDay, String maxGranterTotal, String allowExpire, String allowDecay, String allowIgnore, String repeatable) {
-        return CM.grant_template.create.land.cmd.create(name, allowedRecipients, level + "",
-                onlyNewCities ? "true" : null, econRole, selfRole, bracket, useReceiverBracket, maxTotal, maxDay, maxGranterDay, maxGranterTotal, allowExpire, allowDecay, allowIgnore, repeatable, null).toString();
+        return CM.grant_template.create.land.cmd.name(name).allowedRecipients(
+                allowedRecipients).level(
+                        level + "").onlyNewCities(
+                onlyNewCities ? "true" : null).econRole(
+                econRole).selfRole(
+                selfRole).bracket(
+                bracket).useReceiverBracket(
+                useReceiverBracket).maxTotal(
+                maxTotal).maxDay(
+                maxDay).maxGranterDay(
+                maxGranterDay).maxGranterTotal(
+                maxGranterTotal).expireTime(
+                allowExpire).decayTime(
+                allowDecay).allowIgnore(
+                allowIgnore).repeatable_time(
+                repeatable).toString();
     }
 
     public Map<Integer, Double> getTopCityLandGrant(DBNation receiver) {
 
-        List<Transaction2> transactions = receiver.getTransactions(0, true);
+        List<Transaction2> transactions = receiver.getTransactions(-1, true);
 
         Map<Integer, Double> landGrants = Grant.getLandGrantedByCity(receiver, transactions);
 
@@ -158,13 +172,13 @@ public class LandTemplate extends AGrantTemplate<Double>{
     }
 
     @Override
-    public List<Grant.Requirement> getDefaultRequirements(@Nullable DBNation sender, @Nullable DBNation receiver, Double parsed) {
-        List<Grant.Requirement> list = super.getDefaultRequirements(sender, receiver, parsed);
-        list.addAll(getRequirements(sender, receiver, this, parsed));
+    public List<Grant.Requirement> getDefaultRequirements(GuildDB db, @Nullable DBNation sender, @Nullable DBNation receiver, Double parsed, boolean confirm) {
+        List<Grant.Requirement> list = super.getDefaultRequirements(db, sender, receiver, parsed, confirm);
+        list.addAll(getRequirements(db, sender, receiver, this, parsed));
         return list;
     }
 
-    public static List<Grant.Requirement> getRequirements(DBNation sender, DBNation receiver, LandTemplate template, Double parsed) {
+    public static List<Grant.Requirement> getRequirements(GuildDB db, DBNation sender, DBNation receiver, LandTemplate template, Double parsed) {
         if (parsed == null && template != null) parsed = (double) template.level;
 
         List<Grant.Requirement> list = new ArrayList<>();
@@ -181,7 +195,6 @@ public class LandTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Requires the project: `" + Projects.ARABLE_LAND_AGENCY + "`", true, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-
                 return receiver.hasProject(Projects.ARABLE_LAND_AGENCY);
             }
         }));
@@ -190,7 +203,6 @@ public class LandTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Requires the project: `" + Projects.ADVANCED_ENGINEERING_CORPS + "`", true, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-
                 return receiver.hasProject(Projects.ADVANCED_ENGINEERING_CORPS);
             }
         }));
@@ -198,8 +210,7 @@ public class LandTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Must have purchased a city in the past 10 days (when `onlyNewCities: True`)", true, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-
-                if(template.onlyNewCities)
+                if(template != null && template.onlyNewCities)
                     return receiver.getCitiesSince(TimeUtil.getTimeFromTurn(TimeUtil.getTurn() - 120)) > 0;
                 else
                     return true;
@@ -211,7 +222,7 @@ public class LandTemplate extends AGrantTemplate<Double>{
         list.add(new Grant.Requirement("Requires domestic policy to be `" + DomesticPolicy.RAPID_EXPANSION + "`", true, new Function<DBNation, Boolean>() {
             @Override
             public Boolean apply(DBNation receiver) {
-                return receiver.getDomesticPolicy() != DomesticPolicy.RAPID_EXPANSION;
+                return receiver.getDomesticPolicy() == DomesticPolicy.RAPID_EXPANSION;
             }
         }));
 

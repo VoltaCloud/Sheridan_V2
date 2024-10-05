@@ -1,6 +1,7 @@
 package link.locutus.discord.util.task.ia;
 
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.apiv1.enums.city.building.ServiceBuilding;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
@@ -160,9 +161,6 @@ public class IACheckup {
     }
 
     public Map<AuditType, Map.Entry<Object, String>> checkup(DBNation nation, AuditType[] audits, boolean individual, boolean fast) throws InterruptedException, ExecutionException, IOException {
-        int days = 120;
-
-        long start = System.currentTimeMillis();
         Map<Integer, JavaCity> cities = nation.getCityMap(false);
         if (cities.isEmpty()) {
             return new HashMap<>();
@@ -178,11 +176,11 @@ public class IACheckup {
         Map<ResourceType, Double> stockpile = memberStockpile.get(nation);
         Map<AuditType, Map.Entry<Object, String>> results = new LinkedHashMap<>();
         for (AuditType type : audits) {
-            long start2 = System.currentTimeMillis();
+            long start = System.currentTimeMillis();
             audit(type, nation, transactions, cities, stockpile, results, individual, fast);
-            long diff = System.currentTimeMillis() - start2;
+            long diff = System.currentTimeMillis() - start;
             if (diff > 10) {
-                System.out.println("remove:||Checkup Diff " + type + " | " + diff + " ms");
+                Logg.text("Audit " + type + " took " + diff + " ms");
             }
         }
 
@@ -466,7 +464,7 @@ public class IACheckup {
                 return stockpile == null || stockpile.isEmpty() ? null : checkWarchest(nation, stockpile, db);
             case BEIGE_LOOT:
                 if (nation.getMeta(NationMeta.INTERVIEW_RAID_BEIGE) == null) {
-                    String cmd = CM.war.find.raid.cmd.create("*", "15", null, null, "170", null, null, null, null, null, null).toString();
+                    String cmd = CM.war.find.raid.cmd.targets("*").numResults("15").beigeTurns("84").toString();
                     String shortDesc = "`" + cmd + "`";
                     String longDesc = "At higher city counts, there are less nations available to raid. You will need to find and hit nations as the come off of the beige protection color.\n" +
                             "To list raid targets currently on beige, use e.g.:\n" +
@@ -529,13 +527,13 @@ public class IACheckup {
             case SPY_COMMAND: {
                 if (nation.getMeta(NationMeta.INTERVIEW_SPIES) != null) return null;
                 String desc = "Try using the commands e.g.:\n" +
-                        "" + CM.nation.spies.cmd.create("https://politicsandwar.com/nation/id=6", null, null) + "\n";
+                        "" + CM.nation.spies.cmd.nation("https://politicsandwar.com/nation/id=6") + "\n";
                 return new AbstractMap.SimpleEntry<>(false, desc);
             }
             case LOOT_COMMAND: {
                 if (nation.getMeta(NationMeta.INTERVIEW_LOOT) != null) return null;
                 String desc = "Try using the commands e.g.:\n" +
-                        "" + CM.nation.loot.cmd.create("https://politicsandwar.com/nation/id=6", null, null).toSlashCommand() + "\n";
+                        "" + CM.nation.loot.cmd.nationOrAlliance("https://politicsandwar.com/nation/id=6").toSlashCommand() + "\n";
                 return new AbstractMap.SimpleEntry<>(false, desc);
             }
             case GENERATE_CITY_BUILDS: {
@@ -590,23 +588,9 @@ public class IACheckup {
                 String cityUrl = PW.City.getCityUrl(cityId);
                 String mmrStr = StringMan.join(mmr, "");
                 response.append("The " + CM.city.optimalBuild.cmd.toSlashMention() + " command can be used to generate a build for a city. Let's try the command now, e.g.:\n" +
-                        "" + CM.city.optimalBuild.cmd.create(cityUrl,
-                                null,
-                                mmrStr,
-                                null,
-                                MathMan.format(maxInfra),
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null).toSlashCommand());
+                        "" + CM.city.optimalBuild.cmd.build(cityUrl).buildMMR(
+                                mmrStr).infra(
+                                MathMan.format(maxInfra)).toSlashCommand());
                 return new AbstractMap.SimpleEntry<>(false, response.toString());
             }
             case ROI: {
@@ -629,7 +613,7 @@ public class IACheckup {
                 String desc ="During Peace time, you can find targets to gather intel on using:\n" +
                         "" + CM.spy.find.intel.cmd.toSlashMention() + "\n" +
                         "During wartime, you can find enemies to spy using:\n" +
-                        "" + CM.spy.find.target.cmd.create("enemies", "*", null, null, null, null) + "\n\n" +
+                        "" + CM.spy.find.target.cmd.targets("enemies").operations("*") + "\n\n" +
                         "(You should conduct a spy op every day)";
                 return new AbstractMap.SimpleEntry<>(diff, desc);
             }
@@ -772,7 +756,7 @@ public class IACheckup {
         double threshold = maxPlanes * 0.9;
         if (nation.getAircraft() < threshold) {
             long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(3);
-            int previousAir = nation.getUnits(MilitaryUnit.AIRCRAFT, cutoff);
+            int previousAir = nation.getUnitsAt(MilitaryUnit.AIRCRAFT, cutoff);
             if (previousAir == nation.getAircraft()) {
                 String desc = "Planes can attack ground, air, or sea and are the best unit for defending your infra and allies. You can buy aircraft from the military tab. <https://politicsandwar.com/nation/military/aircraft/>";
                 return new AbstractMap.SimpleEntry<>(nation.getAircraft() / (double) threshold, desc);
@@ -817,7 +801,7 @@ public class IACheckup {
             }
         }
 
-        String cmd = CM.war.find.raid.cmd.create("*", "15", null, null, "12", null, null, null, null, null, null).toSlashCommand(false);
+        String cmd = CM.war.find.raid.cmd.targets("*").numResults("15").beigeTurns("12").toSlashCommand(false);
         String longDesc = "Let's declare on a target as they come off beige:\n" +
                 "1. Use e.g. `" + cmd + "` to find a target that ends beige in the next 12 turns\n" +
                 "2. Set a reminder on your phone, or on discord using " + CM.alerts.beige.beigeAlert.cmd.toSlashMention() + "\n" +
@@ -857,7 +841,12 @@ public class IACheckup {
     }
 
     private Map.Entry<Object, String> checkBuyRpc(GuildDB db, DBNation nation, Map<Integer, JavaCity> cities) {
-        if (nation.getCities() > Projects.ACTIVITY_CENTER.maxCities()) return null;
+        if (nation.getCities() > Projects.ACTIVITY_CENTER.maxCities()) {
+            if (nation.hasProject(Projects.ACTIVITY_CENTER)) {
+                return Map.entry("-1", "Go to the projects tab and sell activity center");
+            }
+            return null;
+        }
         if (nation.getProjectTurns() > 0 || nation.getFreeProjectSlots() <= 0) return null;
         return new AbstractMap.SimpleEntry<>("1", "Go to the projects tab and buy the Activity Center");
     }
@@ -961,7 +950,7 @@ public class IACheckup {
         if (nation.getCityTurns() <= 0 && nation.getCities() < 20) {
             if (nation.isBlockaded()) return null;
 
-            double cost = PW.City.nextCityCost(nation.getCities(), true, nation.hasProject(Projects.URBAN_PLANNING), nation.hasProject(Projects.ADVANCED_URBAN_PLANNING), nation.hasProject(Projects.METROPOLITAN_PLANNING), nation.hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY));
+            double cost = PW.City.nextCityCost(nation.getCities(), true, nation.hasProject(Projects.URBAN_PLANNING), nation.hasProject(Projects.ADVANCED_URBAN_PLANNING), nation.hasProject(Projects.METROPOLITAN_PLANNING), nation.hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY), nation.hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
             Map<ResourceType, Double> resources = Collections.singletonMap(ResourceType.MONEY, cost);
             return new AbstractMap.SimpleEntry<>(nation.getCities(), "Your city timer is up. Use the #resource-request channel to request funds for a city");
         }
@@ -1122,14 +1111,14 @@ public class IACheckup {
         if (nation.getOff() >= targets.size() || targets.isEmpty()) return null;
         StringBuilder resposnse = new StringBuilder("You have " + (5 - nation.getOff()) + " free offensive slots. ");
         if (hasEnemies && nation.getOff() < 3) {
-            String warPriority = CM.war.find.enemy.cmd.create(null, null, null, null, null, null, null, "true", null, null, null).toSlashCommand(false);
+            String warPriority = CM.war.find.enemy.cmd.onlyEasy("true").toSlashCommand(false);
             resposnse.append("Please use " + warPriority+ " or " + CM.war.find.enemy.cmd.toSlashMention() + "");
         } else hasEnemies = false;
         if (hasRaids) {
             if (hasEnemies) resposnse.append("Please use ");
             else resposnse.append("or ");
 
-            String cmd = CM.war.find.raid.cmd.create("*", null, null, null, null, null, null, null, null, null, null).toSlashCommand(false);
+            String cmd = CM.war.find.raid.cmd.targets("*").toSlashCommand(false);
             resposnse.append("`" + cmd + "` ");
         }
         resposnse.append("for some juicy targets");
@@ -1327,7 +1316,7 @@ public class IACheckup {
 
             double maxPlanes = Math.min(numHangars * 15, pop * 0.95 * 0.001);
             Integer currentAircraft = nation.getAircraft();
-            int previousPlanes = nation.getUnits(MilitaryUnit.AIRCRAFT, System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1));
+            int previousPlanes = nation.getUnitsAt(MilitaryUnit.AIRCRAFT, System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1));
             if (previousPlanes == currentAircraft && currentAircraft < maxPlanes) {
                 double canBuy = Math.min(numHangars * 15, pop * 0.001);
                 message = "You can purchase up to " + (int) canBuy + " aircraft.";
@@ -1368,7 +1357,7 @@ public class IACheckup {
 
             double maxSoldiers = Math.min(3000 * numBarracks, pop * 0.95 * 0.15);
             Integer currentSoldiers = nation.getSoldiers();
-            int previousSoldiers = nation.getUnits(MilitaryUnit.SOLDIER, System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1));
+            int previousSoldiers = nation.getUnitsAt(MilitaryUnit.SOLDIER, System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1));
             if (previousSoldiers == currentSoldiers && currentSoldiers < maxSoldiers) {
                 double canBuy = Math.min(pop * 0.15, 3000 * numBarracks);
                 message = "You can purchase up to " + (int) canBuy + " soldiers.";

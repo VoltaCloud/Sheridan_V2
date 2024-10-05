@@ -1,6 +1,11 @@
 package link.locutus.discord.commands.manager.v2.impl.pw.commands;
 
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+import it.unimi.dsi.fastutil.longs.Long2DoubleOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.NationAttributeDouble;
@@ -12,7 +17,7 @@ import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
-import link.locutus.discord.commands.war.WarCategory;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Filter;
@@ -29,16 +34,13 @@ import link.locutus.discord.commands.sheets.SpySheet;
 import link.locutus.discord.config.Messages;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
+import link.locutus.discord.db.NationDB;
 import link.locutus.discord.db.entities.*;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.guild.GuildKey;
 import link.locutus.discord.db.guild.SheetKey;
-import link.locutus.discord.pnw.AllianceList;
-import link.locutus.discord.pnw.BeigeReason;
-import link.locutus.discord.pnw.NationList;
-import link.locutus.discord.pnw.NationScoreMap;
-import link.locutus.discord.pnw.SimpleNationList;
-import link.locutus.discord.pnw.Spyop;
+import link.locutus.discord.gpt.GPTUtil;
+import link.locutus.discord.pnw.*;
 import link.locutus.discord.user.Roles;
 import link.locutus.discord.util.MarkupUtil;
 import link.locutus.discord.util.MathMan;
@@ -81,6 +83,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
+import java.text.SimpleDateFormat;
 import java.time.ZonedDateTime;
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -103,10 +106,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
-import java.util.function.Consumer;
-import java.util.function.Function;
+import java.util.function.*;
 import java.util.stream.Collectors;
 
 public class WarCommands {
@@ -117,7 +117,7 @@ public class WarCommands {
     public String setBeigeAlertScoreLeeway(@Me DBNation me,
                                            @Range(min=0) double scoreLeeway) {
         me.setMeta(NationMeta.BEIGE_ALERT_SCORE_LEEWAY, scoreLeeway);
-        return "Set beige alert score leeway to " + MathMan.format(scoreLeeway) + "ns";
+        return "Set beige alert score leeway to " + MathMan.format(scoreLeeway) + "ns" + "\nSee also:" + CM.alerts.beige.test_auto.cmd.toSlashMention();
     }
 
     @Command(desc = "Set the required amount of loot for automatic beige alerts\n" +
@@ -129,7 +129,7 @@ public class WarCommands {
                                                  "Resources are valued at weekly market average prices")
                                          double requiredLoot) {
         me.setMeta(NationMeta.BEIGE_ALERT_REQUIRED_LOOT, requiredLoot);
-        return "Set beige alert required loot to $" + MathMan.format(requiredLoot);
+        return "Set beige alert required loot to $" + MathMan.format(requiredLoot) + "\nSee also:" + CM.alerts.beige.test_auto.cmd.toSlashMention();
     }
 
     @Command(desc = "Set the types of nations to receive automatic beige alerts for", aliases = {"beigeAlertMode", "setBeigeAlertMode"})
@@ -160,7 +160,39 @@ public class WarCommands {
                 }
             }
         }
-        return response.toString();
+        return response.toString() + "\n\nSee also:" + CM.alerts.beige.test_auto.cmd.toSlashMention();
+    }
+
+    @Command(desc = "View and test that the current automatic beige alert settings allow for notification")
+    @WhitelistPermission
+    @RolePermission(value = {Roles.BEIGE_ALERT, Roles.BEIGE_ALERT_OPT_OUT}, any = true)
+    @CoalitionPermission(Coalition.RAIDPERMS)
+    public String testBeigeAlertAuto(@Me GuildDB db, @Me DBNation me, @Me Member member) {
+        NationMeta.BeigeAlertMode mode = me.getBeigeAlertMode(NationMeta.BeigeAlertMode.NO_ALERTS);
+        if (mode == NationMeta.BeigeAlertMode.NO_ALERTS) {
+            return "Please enable via: " + CM.alerts.beige.beigeAlertMode.cmd.toSlashMention();
+        }
+        NationMeta.BeigeAlertRequiredStatus requiredStatus = me.getBeigeRequiredStatus(NationMeta.BeigeAlertRequiredStatus.ONLINE);
+        if (!requiredStatus.getApplies().test(member)) {
+            return "You are not online on discord. You can change this via: " + CM.alerts.beige.beigeAlertRequiredStatus.cmd.toSlashMention();
+        }
+        Role role = Roles.BEIGE_ALERT.toRole(db);
+        Role optOut = Roles.BEIGE_ALERT_OPT_OUT.toRole(db);
+        Set<Integer> allianceIds = db.getAllianceIds();
+        try {
+            LeavingBeigeAlert.testBeigeAlertAuto(db, member, role, optOut, allianceIds, true, false);
+        } catch (IllegalArgumentException e) {
+            return e.getMessage();
+        }
+        StringBuilder result = new StringBuilder();
+        result.append("**Result: Success**\n");
+        result.append("- require-role:`").append(role == null ? "N/A" : role.getName()).append("`=").append(member.getRoles().contains(role)).append("\n");
+        result.append("- optout:`").append(optOut == null ? "N/A" : optOut.getName()).append("`=").append(member.getRoles().contains(optOut)).append("\n");
+        result.append("- mode:`").append(me.getBeigeAlertMode(null)).append("` (default:`NO_ALERTS`)\n");
+        result.append("- score-leway:`").append(me.getMeta(NationMeta.BEIGE_ALERT_SCORE_LEEWAY)).append("` (default:`0ns`)\n");
+        result.append("- required-loot:`").append(me.getMeta(NationMeta.BEIGE_ALERT_REQUIRED_LOOT)).append("` (default:`$15m`)\n");
+        result.append("- required-status:`").append(requiredStatus.name()).append("` (default:`ONLINE`)\n");
+        return result.toString();
     }
 
     @Command(desc = "Only get the automatic beige alerts if you have the online status on discord\n" +
@@ -170,7 +202,7 @@ public class WarCommands {
     @CoalitionPermission(Coalition.RAIDPERMS)
     public String beigeAlertRequiredStatus(@Me DBNation me, NationMeta.BeigeAlertRequiredStatus status) {
         me.setMeta(NationMeta.BEIGE_ALERT_REQUIRED_STATUS, (byte) status.ordinal());
-        return "Set beige alert required status to " + status;
+        return "Set beige alert required status to " + status + "\nSee also:" + CM.alerts.beige.test_auto.cmd.toSlashMention();
     }
 
     @Command(desc = "List your current beige reminders", aliases = {"beigeReminders", "listBeigeReminders"})
@@ -602,7 +634,7 @@ public class WarCommands {
     @Command(desc = "Find nations blockading your allies\n" +
             "Allies with requests to have their blockade lifted are prioritized")
     @RolePermission(Roles.MEMBER)
-    public String unblockade(@Me DBNation me, @Me GuildDB db, @Me Guild guild, @Me IMessageIO channel,
+    public String unblockade(@Me DBNation me, @Me GuildDB db,
                              @Arg("The nations to check for blockades")
                              @Default Set<DBNation> allies,
                              @Arg("The list of enemies to check blockading\n" +
@@ -817,7 +849,7 @@ public class WarCommands {
 
             response.append("\n\n");
         }
-        response.append("`note: 2.5x ships for guaranteed IT (rounded up). 2x for 90%. see:`" + CM.simulate.naval.cmd.toSlashMention());
+        response.append("`note: 3.4x ships for guaranteed IT (rounded up). 2x for 90%. see:`" + CM.simulate.naval.cmd.toSlashMention());
 
         return response.toString();
 
@@ -892,7 +924,6 @@ public class WarCommands {
                 }
                 alliances.addAll(allies);
             }
-            System.out.println(aaId + " | allies=" + includeAllies + " | " + StringMan.getString(alliances));
             for (DBAlliance ally : alliances) {
                 canCounter.addAll(ally.getNations(true, 10000, true));
             }
@@ -1008,7 +1039,7 @@ public class WarCommands {
     @Command(desc = "Find nations who aren't protected, or are in an alliance unable to provide suitable counters\n" +
             "Not suitable if you have no military")
     @RolePermission(Roles.MEMBER)
-    public String unprotected(@Me IMessageIO channel, @Me GuildDB db, Set<DBNation> targets, @Me DBNation me,
+    public String unprotected(@Me GuildDB db, Set<DBNation> targets, @Me DBNation me,
                               @Switch("r") @Default("10") @Range(min=1, max=25) Integer numResults,
                               @Arg("Ignore the configured Do Not Raid list")
                               @Switch("d") boolean ignoreDNR,
@@ -1031,7 +1062,6 @@ public class WarCommands {
 
         List<Map.Entry<DBNation, Double>> counterChance = getCounterChance(db, targets, numResults, ignoreDNR, includeAllies, nationsToBlitzWith, maxRelativeTargetStrength, maxRelativeCounterStrength, withinAllAttackersRange, ignoreODP, force);
 
-        boolean whitelisted = db.isWhitelisted();
         long currentTurn = TimeUtil.getTurn();
         Map<DBNation, Integer> beigeTurns = new HashMap<>();
 
@@ -1050,11 +1080,9 @@ public class WarCommands {
                     .append(" | " + String.format("%16s", nation.getNation()))
                     .append(" | " + String.format("%16s", nation.getAllianceName()));
 
-            if (whitelisted) {
-                double total = nation.lootTotal();
-                if (total != 0) {
-                    response.append(": $" + MathMan.format(total));
-                }
+            double total = nation.lootTotal();
+            if (total != 0) {
+                response.append(": $" + MathMan.format(total));
             }
 
             response.append("\n```")
@@ -1222,8 +1250,6 @@ public class WarCommands {
 
         int count = 0;
 
-        boolean whitelisted = db.isWhitelisted();
-
         for (Map.Entry<DBNation, Double> nationNetValue : nationNetValues) {
             if (count++ == numResults) break;
 
@@ -1234,11 +1260,9 @@ public class WarCommands {
                     .append(" | " + String.format("%16s", nation.getNation()))
                     .append(" | " + String.format("%16s", nation.getAllianceName()));
 
-            if (whitelisted) {
-                double total = nation.lootTotal();
-                if (total != 0) {
-                    response.append(": $" + MathMan.format(total));
-                }
+            double total = nation.lootTotal();
+            if (total != 0) {
+                response.append(": $" + MathMan.format(total));
             }
 
             response.append("\n```")
@@ -1273,7 +1297,7 @@ public class WarCommands {
 
     @Command(desc = "Find nations in war range that have a treasure")
     @RolePermission(Roles.MEMBER)
-    public void findTreasureNations(@Me User Author, @Me DBNation me, @Me GuildDB guildDB, @Me IMessageIO channel, @Arg("Only list enemies with less ground than you") @Switch("r") boolean onlyWeaker, @Arg("Ignore the do not raid settings for this server") @Switch("d") boolean ignoreDNR, @Switch("n") @Default("5") Integer numResults) {
+    public void findTreasureNations(@Me DBNation me, @Me GuildDB guildDB, @Me IMessageIO channel, @Arg("Only list enemies with less ground than you") @Switch("r") boolean onlyWeaker, @Arg("Ignore the do not raid settings for this server") @Switch("d") boolean ignoreDNR, @Switch("n") @Default("5") Integer numResults) {
 
         StringBuilder response = new StringBuilder("**Results for " + me.getNation() + "**:\n");
         Set<DBNation> nations = Locutus.imp().getNationDB().getNationsMatching(f -> f.isInWarRange(me));
@@ -1320,7 +1344,7 @@ public class WarCommands {
 
     @Command(desc = "Find nations with high bounties within your war range")
     @RolePermission(Roles.MEMBER)
-    public void findBountyNations(@Me User Author, @Me DBNation me, @Me GuildDB guildDB, @Me IMessageIO channel,
+    public void findBountyNations(@Me DBNation me, @Me GuildDB guildDB, @Me IMessageIO channel,
                                   @Arg("Only list enemies with less ground than you") @Switch("r") boolean onlyWeaker,
                                   @Arg("Ignore the do not raid settings for this server") @Switch("d") boolean ignoreDNR,
                                   @Switch("b") Set<WarType> bountyTypes,
@@ -1501,7 +1525,8 @@ public class WarCommands {
             String moneyStr = "$" + MathMan.format(cost);
             response.append(moneyStr + " | " + nation.toMarkdown(true));
         }
-        return response.toString();
+        channel.send(response.toString());
+        return null;
     }
 
     public double damageEstimate(DBNation me, int nationId, List<Double> cityInfra) {
@@ -1550,7 +1575,7 @@ public class WarCommands {
                     "The alliance argument is optional\n" +
                     "Use `success>80` to specify a cutoff for spyop success")
     @RolePermission(Roles.MEMBER)
-    public String Counterspy(@Me IMessageIO channel, @Me GuildDB db, @Me DBNation me,
+    public String Counterspy(@Me IMessageIO channel, @Me GuildDB db,
                              @Arg("The enemy to spy")
                              DBNation enemy,
                              @Arg("The allowed spy operations")
@@ -2163,7 +2188,8 @@ public class WarCommands {
     public String convertDtCSpySheet(@Me IMessageIO io, @Me GuildDB db, @Me User author, SpreadSheet input, @Switch("s") SpreadSheet output,
                                         @Arg("If results (left column) are grouped by the attacker instead of the defender")
                                         @Switch("a") boolean groupByAttacker, @Switch("f") boolean forceUpdate) throws GeneralSecurityException, IOException {
-        Map<DBNation, List<Spyop>> spyOpsFiltered = SpyBlitzGenerator.getTargetsDTC(input, groupByAttacker, forceUpdate);
+        List<String> warnings = new ArrayList<>();
+        Map<DBNation, List<Spyop>> spyOpsFiltered = SpyBlitzGenerator.getTargetsDTC(input, groupByAttacker, forceUpdate, warnings::add);
 
         if (output == null) {
             output = SpreadSheet.create(db, SheetKey.SPYOP_SHEET);
@@ -2174,7 +2200,8 @@ public class WarCommands {
         output.updateClearCurrentTab();
         output.updateWrite();
 
-        output.send(io, null, author.getAsMention()).send();
+        String warningStr = warnings.isEmpty() ? "" : String.join("\n", warnings) + "\n";
+        output.send(io, null, warningStr + author.getAsMention()).send();
         return null;
     }
 
@@ -2203,7 +2230,8 @@ public class WarCommands {
     public String convertTKRSpySheet(@Me IMessageIO io, @Me GuildDB db, @Me User author, SpreadSheet input, @Switch("s") SpreadSheet output,
                                      @Arg("If results (left column) are grouped by the attacker instead of the defender")
                                      @Switch("a") boolean groupByAttacker, @Switch("f") boolean force) throws GeneralSecurityException, IOException {
-        Map<DBNation, List<Spyop>> spyOpsFiltered = SpyBlitzGenerator.getTargetsTKR(input, groupByAttacker, force);
+        List<String> warnings = new ArrayList<>();
+        Map<DBNation, List<Spyop>> spyOpsFiltered = SpyBlitzGenerator.getTargetsTKR(input, groupByAttacker, force, warnings::add);
 
         if (output == null) {
             output = SpreadSheet.create(db, SheetKey.SPYOP_SHEET);
@@ -2214,7 +2242,8 @@ public class WarCommands {
         output.updateClearCurrentTab();
         output.updateWrite();
 
-        output.send(io, null, author.getAsMention()).send();
+        String warningStr = warnings.isEmpty() ? "" : String.join("\n", warnings) + "\n";
+        output.send(io, null, warningStr + author.getAsMention()).send();
         return null;
     }
 
@@ -2433,25 +2462,309 @@ public class WarCommands {
     }
 
     @RolePermission(value = {Roles.MILCOM, Roles.INTERNAL_AFFAIRS,Roles.ECON}, any=true)
+    @Command(desc = """
+            Generate a sheet of per nation bank deposit/withdraw activity over a timeframe
+            The columns represent the time unit (either turns or days) when bank transfers occur for each nation
+            A positive value represents a deposit, a negative value represents a withdrawal
+            When both are specified, the net deposit/withdrawal is shown""")
+    public String DepositSheetDate(@Me IMessageIO io, @Me GuildDB db, Set<DBNation> nations,
+                                  boolean deposit,
+                                  boolean withdraw,
+                                  @Arg("Date to start from")
+                                  @Timestamp long start_time,
+                                  @Timestamp long end_time,
+                                  @Switch("d") boolean split_deposit_withdraw,
+                                  @Switch("t") boolean by_turn,
+                                  @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
+        if (split_deposit_withdraw && (!deposit || !withdraw)) {
+            throw new IllegalArgumentException("Splitting off and def requires both `off` and `def` to be true");
+        }
+        if (!deposit && !withdraw) {
+            throw new IllegalArgumentException("At least one of `off` or `def` must be true");
+        }
+        long startTurn = TimeUtil.getTurn(start_time);
+        long endTurn = TimeUtil.getTurn(end_time);
+
+        long endDay = TimeUtil.getDay(TimeUtil.getTimeFromTurn(TimeUtil.getTurn(end_time) + 11));
+        long startDay = TimeUtil.getDay(start_time);
+
+        long numDays = endDay - startDay + 1;
+        if (numDays > 365) {
+            throw new IllegalArgumentException("Too many days: `" + numDays + " (max 365)");
+        }
+        if (endTurn <= startTurn) {
+            throw new IllegalArgumentException("End time must be after start time (2h)");
+        }
+        if (by_turn && endTurn - startTurn > 365) {
+            throw new IllegalArgumentException("Too many turns: `" + (endTurn - startTurn + 1) + " (max 365)");
+        }
+
+        Set<Long> nationIds = new LongOpenHashSet(nations.stream().map(NationOrAllianceOrGuild::getIdLong).collect(Collectors.toSet()));
+        List<Transaction2> records = Locutus.imp().getBankDB().getTransactionsByBySenderOrReceiver(nationIds, nationIds, start_time, end_time);
+        Predicate<Integer> allowNation = f -> nationIds.contains((long) f);
+
+        Map<Integer, Map<Long, Double>> deposited = new Int2ObjectOpenHashMap<>();
+        Map<Integer, Map<Long, Double>> withdrawn = new Int2ObjectOpenHashMap<>();
+        Function<Transaction2, Long> toTime = by_turn ? f -> TimeUtil.getTurn(f.getDate()) : f -> TimeUtil.getDay(f.getDate());
+        for (Transaction2 tx : records) {
+            long time = toTime.apply(tx);
+            if (tx.isSenderNation() && allowNation.test((int) tx.sender_id)) {
+                deposited.computeIfAbsent((int) tx.sender_id, f -> new Long2DoubleOpenHashMap()).merge(time, tx.convertedTotal(), Double::sum);
+            } else if (tx.isReceiverNation() && allowNation.test((int) tx.receiver_id)) {
+                withdrawn.computeIfAbsent((int) tx.receiver_id, f -> new Long2DoubleOpenHashMap()).merge(time, tx.convertedTotal(), Double::sum);
+            }
+        }
+
+        if (sheet == null) {
+            sheet = SpreadSheet.create(db, by_turn ? SheetKey.ACTIVITY_SHEET_TURN : SheetKey.ACTIVITY_SHEET_DAY);
+        }
+
+        long startUnit = by_turn ? startTurn : startDay;
+        long endUnit = by_turn ? endTurn : endDay;
+
+        List<String> header = new ArrayList<>(Arrays.asList("nation", "alliance", "cities"));
+        for (long timeUnit = startUnit; timeUnit <= endUnit; timeUnit++) {
+            long time = by_turn ? TimeUtil.getTimeFromTurn(timeUnit) : TimeUtil.getTimeFromDay(timeUnit);
+            SimpleDateFormat format = by_turn ? TimeUtil.DD_MM_YYYY_HH : TimeUtil.DD_MM_YYYY;
+            header.add(format.format(new Date(time)));
+        }
+
+        sheet.setHeader(header);
+        for (DBNation nation : nations) {
+            Map<Long, Double> depActivity = deposited.getOrDefault(nation.getNation_id(), new Long2DoubleOpenHashMap());
+            Map<Long, Double> withActivity = withdrawn.getOrDefault(nation.getNation_id(), new Long2DoubleOpenHashMap());
+            Function<Long, String> formatFunc;
+            if (split_deposit_withdraw) {
+                formatFunc = f -> {
+                    double depAmt = depActivity.getOrDefault(f, 0d);
+                    double withAmt = withActivity.getOrDefault(f, 0d);
+                    if (depAmt == 0 && withAmt == 0) return "";
+                    return MathMan.format(depAmt) + "/" + MathMan.format(withAmt);
+                };
+            } else {
+                formatFunc = f -> {
+                    double amt = (depActivity.getOrDefault(f, 0d) - withActivity.getOrDefault(f, 0d));
+                    return amt == 0 ? "" : MathMan.format(amt);
+                };
+            }
+            header.set(0, MarkupUtil.sheetUrl(nation.getNation(), nation.getUrl()));
+            header.set(1, MarkupUtil.sheetUrl(nation.getAllianceName(), nation.getAllianceUrl()));
+            header.set(2, nation.getCities() + "");
+            int index = 3;
+            for (long timeUnit = startUnit; timeUnit <= endUnit; timeUnit++) {
+                header.set(index, formatFunc.apply(timeUnit));
+                index++;
+            }
+            sheet.addRow(header);
+        }
+
+        sheet.updateClearCurrentTab();
+        sheet.updateWrite();
+
+        sheet.attach(io.create(), "activity").send();
+        return null;
+    }
+
+    @RolePermission(value = {Roles.MILCOM, Roles.INTERNAL_AFFAIRS,Roles.ECON}, any=true)
     @Command(desc = "Generate a sheet of nation login activity from a nation id over a timeframe\n" +
+            "The columns are the 7 days of the week and then turns of the day (12)\n" +
             "Note: use the other activity sheet need info of a deleted nation\n" +
             "Days represent the % of that day a nation logs in (UTC)\n" +
             "Numbers represent the % of that turn a nation logs in")
     public String ActivitySheetFromId(@Me IMessageIO io, @Me GuildDB db, int nationId,
                                       @Arg("Date to start from")
-                                      @Default("2w") @Timestamp long trackTime, @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
+                                      @Default("2w") @Timestamp long startTime,
+                                      @Switch("e") @Timestamp Long endTime,
+                                      @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
         DBNation nation = new DBNation();
         nation.setNation_id(nationId);
-        return ActivitySheet(io, db, Collections.singleton(nation), trackTime, sheet);
+        return ActivitySheet(io, db, Collections.singleton(nation), startTime, endTime, sheet);
+    }
+
+    @RolePermission(value = {Roles.MILCOM, Roles.INTERNAL_AFFAIRS,Roles.ECON}, any=true)
+    @Command(desc = "Generate a sheet of per nation war declare activity over a timeframe\n" +
+            "The columns represent the time unit (either turns or days) when wars are declared for each nation")
+    public String WarDecSheetDate(@Me IMessageIO io, @Me GuildDB db, Set<DBNation> nations,
+                                    boolean off,
+                                    boolean def,
+                                    @Arg("Date to start from")
+                                    @Timestamp long start_time,
+                                    @Timestamp long end_time,
+                                  @Switch("d") boolean split_off_def,
+                                    @Switch("t") boolean by_turn,
+                                    @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
+        if (split_off_def && (!off || !def)) {
+            throw new IllegalArgumentException("Splitting off and def requires both `off` and `def` to be true");
+        }
+        if (!off && !def) {
+            throw new IllegalArgumentException("At least one of `off` or `def` must be true");
+        }
+        long startTurn = TimeUtil.getTurn(start_time);
+        long endTurn = TimeUtil.getTurn(end_time);
+
+        long endDay = TimeUtil.getDay(TimeUtil.getTimeFromTurn(TimeUtil.getTurn(end_time) + 11));
+        long startDay = TimeUtil.getDay(start_time);
+
+        long numDays = endDay - startDay + 1;
+        if (numDays > 365) {
+            throw new IllegalArgumentException("Too many days: `" + numDays + " (max 365)");
+        }
+        if (endTurn <= startTurn) {
+            throw new IllegalArgumentException("End time must be after start time (2h)");
+        }
+        if (by_turn && endTurn - startTurn > 365) {
+            throw new IllegalArgumentException("Too many turns: `" + (endTurn - startTurn + 1) + " (max 365)");
+        }
+
+        Set<Integer> nationIds = new IntOpenHashSet(nations.stream().map(DBNation::getNation_id).collect(Collectors.toSet()));
+        Set<DBWar> wars = Locutus.imp().getWarDb().queryAttacks().withWarsForNationOrAlliance(nationIds::contains, null, null).between(start_time, end_time).getWars();
+        Predicate<Integer> allowNation = nationIds::contains;
+
+        Map<Integer, Map<Long, Integer>> offWarsByTime = new Int2ObjectOpenHashMap<>();
+        Map<Integer, Map<Long, Integer>> defWarsByTime = new Int2ObjectOpenHashMap<>();
+        Function<DBWar, Long> toTime = by_turn ? war -> TimeUtil.getTurn(war.getDate()) : war -> TimeUtil.getDay(war.getDate());
+        for (DBWar war : wars) {
+            long time = toTime.apply(war);
+            if (allowNation.test(war.getAttacker_id()) && off) {
+                offWarsByTime.computeIfAbsent(war.getAttacker_id(), f -> new Long2IntOpenHashMap()).merge(time, 1, Integer::sum);
+            }
+            if (allowNation.test(war.getDefender_id()) && def) {
+                defWarsByTime.computeIfAbsent(war.getDefender_id(), f -> new Long2IntOpenHashMap()).merge(time, 1, Integer::sum);
+            }
+        }
+
+        if (sheet == null) {
+            sheet = SpreadSheet.create(db, by_turn ? SheetKey.ACTIVITY_SHEET_TURN : SheetKey.ACTIVITY_SHEET_DAY);
+        }
+
+        long startUnit = by_turn ? startTurn : startDay;
+        long endUnit = by_turn ? endTurn : endDay;
+
+        List<String> header = new ArrayList<>(Arrays.asList("nation", "alliance", "cities"));
+        for (long timeUnit = startUnit; timeUnit <= endUnit; timeUnit++) {
+            long time = by_turn ? TimeUtil.getTimeFromTurn(timeUnit) : TimeUtil.getTimeFromDay(timeUnit);
+            SimpleDateFormat format = by_turn ? TimeUtil.DD_MM_YYYY_HH : TimeUtil.DD_MM_YYYY;
+            header.add(format.format(new Date(time)));
+        }
+
+        sheet.setHeader(header);
+        for (DBNation nation : nations) {
+            Map<Long, Integer> offActivity = offWarsByTime.getOrDefault(nation.getNation_id(), new Long2IntOpenHashMap());
+            Map<Long, Integer> defActivity = defWarsByTime.getOrDefault(nation.getNation_id(), new Long2IntOpenHashMap());
+            Function<Long, String> formatFunc;
+            if (split_off_def) {
+                formatFunc = f -> {
+                    int offAmt = offActivity.getOrDefault(f, 0);
+                    int defAmt = defActivity.getOrDefault(f, 0);
+                    if (offAmt == 0 && defAmt == 0) return "";
+                    return offAmt + "/" + defAmt;
+                };
+            } else {
+                formatFunc = f -> {
+                    int amt = (offActivity.getOrDefault(f, 0) + defActivity.getOrDefault(f, 0));
+                    return amt == 0 ? "" : amt + "";
+                };
+            }
+            header.set(0, MarkupUtil.sheetUrl(nation.getNation(), nation.getUrl()));
+            header.set(1, MarkupUtil.sheetUrl(nation.getAllianceName(), nation.getAllianceUrl()));
+            header.set(2, nation.getCities() + "");
+            int index = 3;
+            for (long timeUnit = startUnit; timeUnit <= endUnit; timeUnit++) {
+                header.set(index, formatFunc.apply(timeUnit));
+                index++;
+            }
+            sheet.addRow(header);
+        }
+
+        sheet.updateClearCurrentTab();
+        sheet.updateWrite();
+
+        sheet.attach(io.create(), "activity").send();
+        return null;
     }
 
     @RolePermission(value = {Roles.MILCOM, Roles.INTERNAL_AFFAIRS,Roles.ECON}, any=true)
     @Command(desc = "Generate a sheet of nation login activity from a nation id over a timeframe\n" +
+            "The sheet columns are the dates with the values being either 1 or 0 for logging in or not")
+    public String ActivitySheetDate(@Me IMessageIO io, @Me GuildDB db, Set<DBNation> nations,
+                                    @Arg("Date to start from")
+                                    @Timestamp long start_time,
+                                    @Timestamp long end_time,
+                                    @Switch("t") boolean by_turn,
+                                    @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
+        long startTurn = TimeUtil.getTurn(start_time);
+        long endTurn = TimeUtil.getTurn(end_time);
+
+        long endDay = TimeUtil.getDay(TimeUtil.getTimeFromTurn(TimeUtil.getTurn(end_time) + 11));
+        long startDay = TimeUtil.getDay(start_time);
+
+        long numDays = endDay - startDay + 1;
+        if (numDays > 365) {
+            throw new IllegalArgumentException("Too many days: `" + numDays + " (max 365)");
+        }
+        if (endTurn <= startTurn) {
+            throw new IllegalArgumentException("End time must be after start time (2h)");
+        }
+        if (by_turn && endTurn - startTurn > 365) {
+            throw new IllegalArgumentException("Too many turns: `" + (endTurn - startTurn + 1) + " (max 365)");
+        }
+
+        Set<Integer> nationIds = new IntOpenHashSet(nations.stream().map(DBNation::getNation_id).collect(Collectors.toSet()));
+        Predicate<Integer> allowNation = nationIds::contains;
+
+        NationDB natDb = Locutus.imp().getNationDB();
+        Map<Integer, Set<Long>> activityByTime;
+        if (by_turn) {
+            activityByTime = natDb.getActivityByTurn(startTurn, endTurn, allowNation);
+        } else {
+            activityByTime = natDb.getActivityByDay(TimeUtil.getTimeFromTurn(startTurn), TimeUtil.getTimeFromTurn(endTurn + 11), allowNation);
+        }
+
+        if (sheet == null) {
+            sheet = SpreadSheet.create(db, by_turn ? SheetKey.ACTIVITY_SHEET_TURN : SheetKey.ACTIVITY_SHEET_DAY);
+        }
+
+        long startUnit = by_turn ? startTurn : startDay;
+        long endUnit = by_turn ? endTurn : endDay;
+
+        List<String> header = new ArrayList<>(Arrays.asList("nation", "alliance", "cities"));
+        for (long timeUnit = startUnit; timeUnit <= endUnit; timeUnit++) {
+            long time = by_turn ? TimeUtil.getTimeFromTurn(timeUnit) : TimeUtil.getTimeFromDay(timeUnit);
+            SimpleDateFormat format = by_turn ? TimeUtil.DD_MM_YYYY_HH : TimeUtil.DD_MM_YYYY;
+            header.add(format.format(new Date(time)));
+        }
+
+        sheet.setHeader(header);
+        for (DBNation nation : nations) {
+            Set<Long> activity = activityByTime.get(nation.getNation_id());
+            header.set(0, MarkupUtil.sheetUrl(nation.getNation(), nation.getUrl()));
+            header.set(1, MarkupUtil.sheetUrl(nation.getAllianceName(), nation.getAllianceUrl()));
+            header.set(2, nation.getCities() + "");
+            int index = 3;
+            for (long timeUnit = startUnit; timeUnit <= endUnit; timeUnit++) {
+                header.set(index, activity != null && activity.contains(timeUnit) ? "1" : "");
+                index++;
+            }
+            sheet.addRow(header);
+        }
+
+        sheet.updateClearCurrentTab();
+        sheet.updateWrite();
+
+        sheet.attach(io.create(), "activity").send();
+        return null;
+    }
+
+    @RolePermission(value = {Roles.MILCOM, Roles.INTERNAL_AFFAIRS,Roles.ECON}, any=true)
+    @Command(desc = "Generate a sheet of nation login activity from a nation id over a timeframe\n" +
+            "The columns are the 7 days of the week and then turns of the day (12)\n" +
             "Days represent the % of that day a nation logs in (UTC)\n" +
             "Numbers represent the % of that turn a nation logs in")
     public String ActivitySheet(@Me IMessageIO io, @Me GuildDB db, Set<DBNation> nations,
                                 @Arg("Date to start from")
-                                @Default("2w") @Timestamp long trackTime, @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
+                                @Default("2w") @Timestamp long startTime,
+                                @Switch("e") @Timestamp Long endTime,
+                                @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
         if (sheet == null) {
             sheet = SpreadSheet.create(db, SheetKey.ACTIVITY_SHEET);
         }
@@ -2484,13 +2797,12 @@ public class WarCommands {
             header.set(4, nation.getScore());
 
             Activity activity;
-            if (trackTime == 0) {
-                System.out.println("Track time = 0");
+            if (startTime == 0) {
                 activity = nation.getActivity();
             } else {
-                long diff = System.currentTimeMillis() - trackTime;
-                System.out.println("Check turns " + diff + " | " + TimeUnit.MILLISECONDS.toHours(diff) / 2 + " | " + trackTime);
-                activity = nation.getActivity(TimeUnit.MILLISECONDS.toHours(diff) / 2);
+                long startTurn = TimeUnit.MILLISECONDS.toHours(startTime) / 2;
+                long endTurn = endTime == null ? Long.MAX_VALUE : TimeUnit.MILLISECONDS.toHours(endTime) / 2;
+                activity = nation.getActivity(startTurn, endTurn);
             }
             double[] byDay = activity.getByDay();
             double[] byDayTurn = activity.getByDayTurn();
@@ -2600,7 +2912,7 @@ public class WarCommands {
 
                 double daysSpies = nation.daysSinceLastSpyBuy();
 
-                Map<Integer, JavaCity> cities = nation.getCityMap(false, false);
+                Map<Integer, JavaCity> cities = nation.getCityMap(false, false, false);
                 int i = 0;
                 for (Map.Entry<Integer, JavaCity> cityEntry : cities.entrySet()) {
                     int cityBarracks = cityEntry.getValue().getBuilding(Buildings.BARRACKS);
@@ -2720,7 +3032,7 @@ public class WarCommands {
                                 @Arg("Date to start from")
                                 @Timestamp long cuttOff,
                                 @Arg("Only check these nations")
-                                @Default("*") Set<DBNation> filter,
+                                @Default Set<DBNation> filter,
                                 @Arg("Ignore inactive nations")
                                 @Switch("a") boolean ignoreInactive,
                                 @Arg("Ignore vacation mode nations")
@@ -2738,6 +3050,7 @@ public class WarCommands {
                 if (change.getFromRank().id >= Rank.MEMBER.id && change.getFromId() == aaId) {
                     DBNation nation = DBNation.getById(change.getNationId());
                     if (nation == null || nation.getAlliance_id() == aaId) continue;
+                    if (filter != null && !filter.contains(nation)) continue;
                     nations.put(nation, new AbstractMap.SimpleEntry<>(change.getDate(), change.getFromRank()));
                     nationPreviousAA.put(nation.getId(), aaId);
                 }
@@ -3048,7 +3361,7 @@ public class WarCommands {
     }
 
     @Command(desc = "List war rooms for an ally or enemy")
-    public String warRoomList(@Me GuildDB db, @Me WarCategory warCategory, DBNation nation) {
+    public String warRoomList(@Me WarCategory warCategory, DBNation nation) {
         Map<Integer, WarCategory.WarRoom> roomMap = warCategory.getWarRoomMap();
         WarCategory.WarRoom room = roomMap.get(nation.getId());
         Function<WarCategory.WarRoom, String> toString = f -> {
@@ -3146,7 +3459,7 @@ public class WarCommands {
             DBNation target = entry.getKey();
             Set<DBNation> attackers = entry.getValue();
 
-            WarCategory.WarRoom channel = WarRoom.createChannel(warCat, author, guild, s -> response.append(s).append("\n"), ping, addMember, addCounterMessage, target, attackers);
+            WarCategory.WarRoom channel = WarCategory.createChannel(warCat, author, guild, s -> response.append(s).append("\n"), ping, addMember, addCounterMessage, target, attackers);
 
             try {
                 if (customMessage != null) {
@@ -3185,6 +3498,9 @@ public class WarCommands {
                               @Arg("Parse nation leader instead of nation name") @Switch("l") boolean useLeader,
                               @Arg("Send instructions as direct message on discord")
                               @Switch("d") boolean dm) throws IOException, GeneralSecurityException {
+        if(header != null) {
+            GPTUtil.checkThrowModeration(header);
+        }
 
         ApiKeyPool.ApiKey myKey = me.getApiKey(false);
         ApiKeyPool key = null;
@@ -3598,13 +3914,13 @@ public class WarCommands {
                            Set<DBNation> allies,
                            Set<DBNation> enemies,
                            @Arg(value = "Cutoff date for wars (default 5 days ago)", group = 0)
-                           @Default("5d") @Timestamp long cutoff,
+                           @Default("5d") @Timestamp long startTime,
+                           @Switch("e") @Timestamp Long endTime,
                            @Arg(value = "If concluded wars within the timeframe should be included", group = 0)
                            @Switch("i") boolean includeConcludedWars,
                            @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
-        long now = System.currentTimeMillis();
-
-        WarParser parser1 = WarParser.ofAANatobj(null, allies, null, enemies, cutoff, now);
+        if (endTime == null) endTime = System.currentTimeMillis();
+        WarParser parser1 = WarParser.ofAANatobj(null, allies, null, enemies, startTime, endTime);
 
         Set<DBWar> allWars = new HashSet<>();
         allWars.addAll(parser1.getWars().values());
@@ -3977,7 +4293,6 @@ public class WarCommands {
         return null;
     }
 
-    @RolePermission(Roles.MEMBER)
     @Command(desc = "Calculate spies for a nation.\n" +
             "Nation argument can be nation name, id, link, or discord tag\n" +
             "If `spies-used` is provided, it will cap the odds at using that number of spies\n" +
@@ -4110,7 +4425,12 @@ public class WarCommands {
             if (aaIds.isEmpty()) {
                 Set<Integer> allies = db.getAllies(true);
                 if (allies.isEmpty()) {
-                    if (me.getAlliance_id() == 0) return "No alliance or allies are set.\n" + GuildKey.ALLIANCE_ID.getCommandMention() + "\nOR\n " + CM.coalition.create.cmd.create(null, Coalition.ALLIES.name()) + "";
+                    if (me.getAlliance_id() == 0) {
+                        return "No alliance or allies are set.\n" +
+                                GuildKey.ALLIANCE_ID.getCommandMention() +
+                                "\nOR\n " +
+                                CM.coalition.create.cmd.coalitionName(Coalition.ALLIES.name());
+                    }
                     aaIds = new HashSet<>(Arrays.asList(me.getAlliance_id()));
                     counterWith = new HashSet<>(new AllianceList(aaIds).getNations(true, 0, true));
                 } else {
@@ -4284,6 +4604,41 @@ public class WarCommands {
     public String sortWarRooms(@Me WarCategory warCat) {
         int moved = warCat.sort();
         return "Done! Moved " + moved + " channels";
+    }
+
+    @RolePermission(value = Roles.MILCOM)
+    @Command(desc = "Delete planning war rooms with no participants")
+    public String deletePlanningChannel(@Me WarCategory warCat) {
+        int count = 0;
+        for (Map.Entry<Integer, WarCategory.WarRoom> entry : new HashMap<>(warCat.getWarRoomMap()).entrySet()) {
+            WarCategory.WarRoom room = entry.getValue();
+            if (room.channel == null) continue;
+            if (!room.getParticipants().isEmpty()) continue;
+            if (!room.isPlanning()) continue;
+            room.addInitialParticipants(false);
+            if (!room.getParticipants().isEmpty()) continue;
+            room.delete("Manually deleted");
+            count++;
+        }
+        if (count == 0) return "No channels found to delete";
+        return "Done. Deleting " + count + " war rooms. Please wait for rooms to finish deleting";
+    }
+
+    @RolePermission(value = Roles.MILCOM)
+    @Command(desc = "Delete war rooms against the enemies specified")
+    public String deleteForEnemies(@Me WarCategory warCat, Set<DBNation> enemy_rooms) {
+        int count = 0;
+        for (Map.Entry<Integer, WarCategory.WarRoom> entry : new HashMap<>(warCat.getWarRoomMap()).entrySet()) {
+            WarCategory.WarRoom room = entry.getValue();
+            if (!enemy_rooms.contains(room.target)) continue;
+            room.delete("Manually deleted");
+            count++;
+        }
+        if (count == 0) return "No channels found to delete";
+        return "Done. Deleting " + count + " war rooms. Please wait for rooms to finish deleting.\n\n" +
+                "Note: Rooms will auto create with enemies with active wars, set a filter to specify which enemies rooms are auto created for:\n" +
+                "- " + CM.settings_war_alerts.WAR_ROOM_FILTER.cmd.toSlashMention() + "\n" +
+                "- " + CM.admin.sync.warrooms.cmd.toSlashMention();
     }
 
     @RolePermission(value = Roles.MILCOM)

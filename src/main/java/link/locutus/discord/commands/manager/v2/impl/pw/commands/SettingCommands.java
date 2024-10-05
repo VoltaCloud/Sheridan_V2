@@ -46,7 +46,7 @@ public class SettingCommands {
 
     @Command(desc = "Delete an alliance or guild setting")
     @RolePermission(any = true, value = {Roles.ADMIN, Roles.INTERNAL_AFFAIRS, Roles.ECON, Roles.MILCOM, Roles.FOREIGN_AFFAIRS})
-    public String delete( @Me GuildDB db, @Me User author, @Default GuildSetting key) {
+    public String delete( @Me GuildDB db, @Me User author, GuildSetting key) {
         if (!key.hasPermission(db, author, null)) {
             return "You do not have permission to delete the key `" + key.name() + "`";
         }
@@ -68,7 +68,7 @@ public class SettingCommands {
     @Command(desc = "Configure any alliance or guild settings")
     @RolePermission(any = true, value = {Roles.ADMIN, Roles.INTERNAL_AFFAIRS, Roles.ECON, Roles.MILCOM, Roles.FOREIGN_AFFAIRS})
     @NoFormat
-    public static String info(@Me IMessageIO io, @Me Guild guild, @Me User author, @Me DBNation me,
+    public static String info(@Me Guild guild, @Me User author,
                            @Arg("The setting to change or view")
                            @Default GuildSetting key,
                            @Arg("The value to set the setting to")
@@ -99,11 +99,11 @@ public class SettingCommands {
                     Object valueObj = key.getOrNull(db, false);
                     if (valueObj == null) {
                         response.append("**current value**: `" + valueStr + "`\n\n");
-                        response.append("`A value is set but it is invalid`\n");
+                        response.append("`!! A value is set but it is invalid`\n");
                     } else {
                         response.append("**current value**: `" + key.toReadableString(db, valueObj) + "`\n\n");
                     }
-                    response.append("`note: to delete, use: " + CM.settings.delete.cmd.create(key.name()).toSlashCommand(false) + "`\n");
+                    response.append("`note: to delete, use: " + CM.settings.delete.cmd.key(key.name()).toSlashCommand(false) + "`\n");
                 } else {
                     response.append("`no value is set`\n");
                 }
@@ -142,9 +142,9 @@ public class SettingCommands {
 
                 response.append("\n");
                 if (!listAll) {
-                    response.append("To list all setting: " + CM.settings.info.cmd.create(null, null, "true") + "\n");
+                    response.append("To list all setting: " + CM.settings.info.cmd.listAll("true") + "\n");
                 }
-                response.append("For info/usage: " + CM.settings.info.cmd.create("YOUR_KEY_HERE", null, null).toSlashCommand(false) + "\n");
+                response.append("For info/usage: " + CM.settings.info.cmd.key("YOUR_KEY_HERE").toSlashCommand(false) + "\n");
                 response.append("To delete: " + CM.settings.delete.cmd.toSlashMention() + "\n");
                 response.append("Find a setting: " + CM.help.find_setting.cmd.toSlashMention());
 
@@ -159,7 +159,7 @@ public class SettingCommands {
             valueObj = null;
         } else {
             valueObj = key.parse(db, value);
-            valueObj = key.validate(db, valueObj);
+            valueObj = key.validate(db, author, valueObj);
 
             if (valueObj == null) {
                 return "Invalid value for key `" + key.name() + "`";
@@ -172,13 +172,13 @@ public class SettingCommands {
             }
             return key.delete(db, author);
         } else {
-            return key.set(db, valueObj);
+            return key.set(db, author, valueObj);
         }
     }
 
     @Command(desc = "View set or delete alliance or guild google sheets")
     @RolePermission(any = true, value = {Roles.ADMIN, Roles.INTERNAL_AFFAIRS, Roles.ECON, Roles.MILCOM, Roles.FOREIGN_AFFAIRS})
-    public String sheets(@Me GuildDB db, @Me IMessageIO io, @Me Guild guild, @Me User author, @Me DBNation me) throws Exception {
+    public String sheets(@Me GuildDB db) throws Exception {
         Map<SheetKey, String> sheets = getSheets(db);
         if (sheets.isEmpty()) {
             return "No sheets are configured (sheets are created when you use a sheet command)";

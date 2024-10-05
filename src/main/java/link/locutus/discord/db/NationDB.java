@@ -6,28 +6,26 @@ import com.ptsmods.mysqlw.table.ColumnType;
 import com.ptsmods.mysqlw.table.TablePreset;
 import it.unimi.dsi.fastutil.bytes.ByteArrayList;
 import it.unimi.dsi.fastutil.ints.*;
-import it.unimi.dsi.fastutil.longs.Long2DoubleLinkedOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2DoubleOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2IntLinkedOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectArrayMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.*;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectArraySet;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.apiv1.domains.subdomains.SNationContainer;
+import link.locutus.discord.apiv1.enums.city.building.MilitaryBuilding;
 import link.locutus.discord.apiv3.csv.DataDumpParser;
 import link.locutus.discord.apiv3.csv.file.CitiesFile;
 import link.locutus.discord.apiv3.csv.file.NationsFile;
 import link.locutus.discord.apiv3.subscription.PnwPusherShardManager;
+import link.locutus.discord.commands.manager.v2.builder.SummedMapRankBuilder;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.entities.DBTreasure;
 import link.locutus.discord.apiv1.enums.city.project.Project;
 import link.locutus.discord.apiv1.enums.city.project.Projects;
 import link.locutus.discord.apiv3.enums.AlliancePermission;
 import link.locutus.discord.apiv3.enums.NationLootType;
-import link.locutus.discord.commands.rankings.builder.*;
 import link.locutus.discord.db.entities.DBCity;
 import link.locutus.discord.apiv3.PoliticsAndWarV3;
 import link.locutus.discord.db.entities.*;
@@ -48,6 +46,7 @@ import link.locutus.discord.event.treasure.TreasureUpdateEvent;
 import link.locutus.discord.event.treaty.*;
 import link.locutus.discord.pnw.PNWUser;
 import link.locutus.discord.util.discord.DiscordUtil;
+import link.locutus.discord.util.io.PagePriority;
 import link.locutus.discord.util.scheduler.ThrowingBiConsumer;
 import link.locutus.discord.util.scheduler.ThrowingConsumer;
 import link.locutus.discord.util.*;
@@ -63,8 +62,6 @@ import link.locutus.discord.apiv1.enums.WarPolicy;
 import link.locutus.discord.apiv1.enums.city.JavaCity;
 import link.locutus.discord.util.scheduler.ThrowingTriConsumer;
 import org.apache.commons.lang3.tuple.Triple;
-import org.slf4j.LoggerFactory;
-import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.sql.PreparedStatement;
@@ -84,7 +81,6 @@ import java.util.stream.Collectors;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 public class NationDB extends DBMainV2 implements SyncableDatabase {
-    private static final Logger LOGGER = LoggerFactory.getLogger(NationDB.class.getSimpleName());
     private final Map<Integer, DBNation> nationsById = new Int2ObjectOpenHashMap<>();
     private final Map<Integer, Map<Integer, DBNation>> nationsByAlliance = new Int2ObjectOpenHashMap<>();
     private final Map<Integer, DBAlliance> alliancesById = new Int2ObjectOpenHashMap<>();
@@ -93,6 +89,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
     private final Map<Integer, Map<Integer, DBAlliancePosition>> positionsByAllianceId = new Int2ObjectOpenHashMap<>();
     private final Map<Integer, Map<Integer, Treaty>> treatiesByAlliance = new Int2ObjectOpenHashMap<>();
     private final Set<Integer> dirtyCities = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final Set<Integer> dirtyCityNations = Collections.synchronizedSet(new LinkedHashSet<>());
     private final Set<Integer> dirtyNations = Collections.synchronizedSet(new LinkedHashSet<>());
     private final Map<Integer, Set<DBTreasure>> treasuresByNation = new Int2ObjectOpenHashMap<>();
     private final Map<String, DBTreasure> treasuresByName = new ConcurrentHashMap<>();
@@ -112,26 +109,27 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
     }
 
     private void condenseCities() {
-        ObjectOpenHashSet<ByteArrayList> cityBytes = new ObjectOpenHashSet<>();
-        for (Map.Entry<Integer, Object> entry : citiesByNation.entrySet()) {
-            ArrayUtil.iterateElements(DBCity.class, entry.getValue(), dbCity -> {
-                ByteArrayList currBytes = new ByteArrayList(dbCity.buildings3);
-                ByteArrayList existing = cityBytes.get(currBytes);
-                if (existing != null) {
-                    dbCity.buildings3 = existing.elements();
-                } else {
-                    cityBytes.add(currBytes);
-                    dbCity.buildings3 = currBytes.elements();
-                }
-            });
+        synchronized (citiesByNation) {
+            ObjectOpenHashSet<ByteArrayList> cityBytes = new ObjectOpenHashSet<>();
+            for (Map.Entry<Integer, Object> entry : citiesByNation.entrySet()) {
+                ArrayUtil.iterateElements(DBCity.class, entry.getValue(), dbCity -> {
+                    ByteArrayList currBytes = new ByteArrayList(dbCity.buildings3);
+                    ByteArrayList existing = cityBytes.get(currBytes);
+                    if (existing != null) {
+                        dbCity.buildings3 = existing.elements();
+                    } else {
+                        cityBytes.add(currBytes);
+                        dbCity.buildings3 = currBytes.elements();
+                    }
+                });
+            }
         }
-
     }
 
-    public void load() throws SQLException {
+    public NationDB load() throws SQLException {
         { // Legacy
             if (tableExists("NATIONS")) {
-                LOGGER.info("Updating legacy nations");
+                Logg.text("Updating legacy nations");
                 updateLegacyNations();
             }
             if (tableExists("TREATIES")) getDb().drop("TREATIES");
@@ -139,15 +137,15 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         }
 
         loadPositions();
-        LOGGER.info("Loaded " + positionsById.size() + " positions");
+        Logg.text("Loaded " + positionsById.size() + " positions");
         loadAlliances();
-        LOGGER.info("Loaded " + alliancesById.size() + " alliances");
+        Logg.text("Loaded " + alliancesById.size() + " alliances");
         loadNations();
-        LOGGER.info("Loaded " + nationsById.size() + " nations");
-        int cities = loadCities();
-        LOGGER.info("Loaded " + cities + " cities");
-        int treaties = loadTreaties();
-        LOGGER.info("Loaded " + treaties + " treaties");
+        Logg.text("Loaded " + nationsById.size() + " nations");
+        int citiesLoaded = loadCities();
+        Logg.text("Loaded " + citiesLoaded + " cities");
+        int treatiesLoaded = loadTreaties();
+        Logg.text("Loaded " + treatiesLoaded + " treaties");
 
         try {
             if (tableExists("KICKS")) {
@@ -160,21 +158,47 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         }
 //        importLegacyNationLoot(true);
 
-        markDirtyIncorrectNations(true, true);
+        loadAndPurgeMeta();
+        loadTreasures();
 
-        // Update nuke dates if missing
+        // Load missing data
+        if (Settings.INSTANCE.ENABLED_COMPONENTS.REPEATING_TASKS) {
+            if (nationsById.isEmpty() && (Settings.INSTANCE.TASKS.ACTIVE_NATION_SECONDS > 0 || Settings.INSTANCE.TASKS.COLORED_NATIONS_SECONDS > 0 || Settings.INSTANCE.TASKS.ALL_NATIONS_SECONDS > 0)) {
+                Logg.text("No nations loaded, fetching all");
+                updateAllNations(null, true);
+                Logg.text("Done fetching all nations");
+            }
+            if (alliancesById.isEmpty() && (Settings.INSTANCE.TASKS.ACTIVE_NATION_SECONDS > 0 || Settings.INSTANCE.TASKS.COLORED_NATIONS_SECONDS > 0 || Settings.INSTANCE.TASKS.ALL_NATIONS_SECONDS > 0)) {
+                Logg.text("No alliances loaded, fetching all");
+                updateAlliances(null, null);
+                Logg.text("Done fetching all alliances");
+            }
+            if (citiesByNation.isEmpty() && (Settings.INSTANCE.TASKS.OUTDATED_CITIES_SECONDS > 0 || Settings.INSTANCE.TASKS.ALL_CITIES_SECONDS > 0)) {
+                Logg.text("No cities loaded, fetching all");
+                updateAllCities(null);
+                Logg.text("Done fetching all cities");
+            }
+            if (treatiesByAlliance.isEmpty() && (Settings.INSTANCE.TASKS.TREATY_UPDATE_SECONDS > 0)) {
+                Logg.text("No treaties loaded, fetching all");
+                updateTreaties(null);
+                Logg.text("Done fetching all treaties");
+            }
+            if (treasuresByNation.isEmpty() && (Settings.INSTANCE.TASKS.TREASURE_UPDATE_SECONDS > 0)) {
+                Logg.text("No treasures loaded, fetching all");
+                updateTreasures(null);
+                Logg.text("Done fetching all treasures");
+            }
+        }
+        return this;
+    }
+
+    public void loadNukeDatesIfEmpty() {
         query("SELECT COUNT(*) FROM CITY_BUILDS WHERE nuke_date > 0", f -> {
         }, (ThrowingConsumer<ResultSet>) rs -> {
             if (!rs.next() || rs.getInt(1) == 0) {
                 Locutus.imp().getWarDb().loadNukeDates();
             }
         });
-
-        System.out.println("Loading meta...");
-        loadAndPurgeMeta();
-        System.out.println("Done loading nations/meta");
-
-        loadTreasures();
     }
 
     public void deleteExpiredTreaties(Consumer<Event> eventConsumer) {
@@ -245,7 +269,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         if (timestamp <= System.currentTimeMillis() - TimeUnit.DAYS.toMillis(11)) return false;
         long turnstamp = TimeUtil.getTurn(timestamp);
 
-        DBCity city = Locutus.imp().getNationDB().getDBCity(nationId, cityId);
+        DBCity city = getDBCity(nationId, cityId);
         if (city != null && city.nuke_turn < turnstamp) {
 
             DBCity copyOriginal = eventConsumer == null ? null : new DBCity(city);
@@ -387,14 +411,34 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 if (getAlliance(id) == null) newIds.add(id);
             }
         }
-        System.out.println("Update new alliances");
         return updateAlliancesById(new ArrayList<>(newIds), eventConsumer);
     }
 
     public void updateAlliances(Consumer<AlliancesQueryRequest> filter, Consumer<Event> eventConsumer) {
         Set<Integer> toDelete = filter == null ? getAlliances().stream().map(DBAlliance::getId).collect(Collectors.toSet()) : new HashSet<>();
-
-        List<Alliance> alliances = Locutus.imp().getV3().fetchAlliances(false, filter, true, true);
+        List<Alliance> alliances;
+        PoliticsAndWarV3 api = Locutus.imp().getV3();
+        if (filter != null) {
+            alliances = api.fetchAlliances(false, filter, true, true);
+        } else {
+            alliances = api.readSnapshot(PagePriority.API_ALLIANCES_AUTO, Alliance.class);
+            Map<Integer, Alliance> byId = new Int2ObjectOpenHashMap<>();
+            for (Alliance alliance : alliances) {
+                byId.put(alliance.getId(), alliance);
+            }
+            List<AlliancePosition> positions = api.readSnapshot(PagePriority.API_ALLIANCES_AUTO, AlliancePosition.class);
+            for (AlliancePosition position : positions) {
+                Alliance alliance = byId.get(position.getAlliance_id());
+                if (alliance != null) {
+                    List<AlliancePosition> list = alliance.getAlliance_positions();
+                    if (list == null) {
+                        list = new ObjectArrayList<>();
+                        alliance.setAlliance_positions(list);
+                    }
+                    list.add(position);
+                }
+            }
+        }
         if (alliances.isEmpty()) return;
         if (!toDelete.isEmpty()) {
             for (Alliance alliance : alliances) {
@@ -402,9 +446,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             }
         }
         Set<Integer> updated = processUpdatedAlliances(alliances, eventConsumer);
-
         if (!toDelete.isEmpty()) {
-            System.out.println("Update deleted alliances");
             updateAlliancesById(new ArrayList<>(toDelete), eventConsumer);
 //            deleteAlliances(toDelete, eventConsumer);
         }
@@ -549,7 +591,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                     String originalName = existing.getName();
                     if (existing.set(alliance, eventConsumer)) {
                         dirtyAlliances.add(existing);
-                        if (originalName != existing.getName()) {
+                        if (!originalName.equals(existing.getName())) {
                             allianceByNameCache.put(alliance.getName().toLowerCase(Locale.ROOT), alliance.getId());
                         }
                     }
@@ -704,7 +746,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         Set<Integer> ids = getUnknownPositionAlliances(positions, true);
         if (ids.isEmpty()) return Collections.emptySet();
 
-
         int amt = PoliticsAndWarV3.ALLIANCES_PER_PAGE - ids.size();
 
         int pad = PoliticsAndWarV3.ALLIANCES_PER_PAGE - ids.size() % PoliticsAndWarV3.ALLIANCES_PER_PAGE;
@@ -713,7 +754,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             ids.addAll(getActiveAlliancesToUpdate(pad, Rank.MEMBER, AlliancePermission.EDIT_ALLIANCE_INFO, AlliancePermission.CHANGE_PERMISSIONS));
         }
 
-        System.out.println("Update outdated alliances");
         // Add new alliances as padding
         return updateNewAlliances(ids, eventConsumer);
     }
@@ -726,12 +766,16 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
 
     public void updateTreaties(Consumer<Event> eventConsumer) {
         PoliticsAndWarV3 v3 = Locutus.imp().getV3();
+//        List<com.politicsandwar.graphql.model.Treaty> treatiesV3 = v3.readSnapshot(PagePriority.API_TREATIES, com.politicsandwar.graphql.model.Treaty.class);
+//        if (treatiesV3.isEmpty()) throw new IllegalStateException("No treaties returned from API! (updateTreaties())");
+//        treatiesV3 = new ObjectArrayList<>(treatiesV3);
+//        treatiesV3.removeIf(f -> f.getTurns_left() <= 0);
+
+        // The snapshots seem to return incorrect results, missing existing treaties and including ones that are gone?
         List<com.politicsandwar.graphql.model.Treaty> treatiesV3 = v3.fetchTreaties(r -> {});
-        if (treatiesV3.isEmpty()) throw new IllegalStateException("No treaties returned from API! (updateTreaties())");
 
         // Don't call events if first time
         if (treatiesByAlliance.isEmpty()) eventConsumer = f -> {};
-
         updateTreaties(treatiesV3, eventConsumer, true);
     }
 
@@ -846,7 +890,28 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         return updateNations(r -> {
             r.setVmode(false);
             r.setActive_since(new Date(dateStart));
-        }, eventConsumer);
+        }, eventConsumer, eventConsumer != null);
+    }
+
+    public List<Nation> getActive(boolean priority, boolean runEvents) throws IOException {
+        String url = "https://politicsandwar.com/index.php?id=15&keyword=&cat=everything&ob=lastactive&od=DESC&maximum=50&minimum=0&search=Go&vmode=false";
+        String html = FileUtil.readStringFromURL(priority ? PagePriority.ACTIVE_PAGE : PagePriority.API_NATIONS_AUTO, url);
+        List<Integer> nationIds = PW.getNationsFromTable(html, 0);
+        Map<Integer, Integer> nationIdIndex = new HashMap<>();
+        for (int i = 0; i < nationIds.size(); i++) {
+            nationIdIndex.put(nationIds.get(i), i);
+        }
+        List<Nation> nationActiveData = new ArrayList<>(Locutus.imp().getV3().fetchNationActive(priority, nationIds));
+        nationActiveData.sort(Comparator.comparingInt(o -> nationIdIndex.get(o.getId())));
+
+        if (runEvents) {
+            Locutus.imp().runEventsAsync(events -> {
+                List<Nation> filtered = nationActiveData.stream().filter(f -> getNation(f.getId()) != null).toList();
+                Locutus.imp().getNationDB().updateNations(filtered, events, -1);
+            });
+        }
+
+        return nationActiveData;
     }
 
     public List<Integer> getMostActiveNationIds(int amt) {
@@ -919,7 +984,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             ids = new ArrayList<>(dirtyNations);
             dirtyNations.clear();
         }
-        System.out.println("Dirty nation Ids " + ids.size());
         updateNations(ids, eventConsumer);
     }
 
@@ -937,10 +1001,9 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 fetched.addAll(updateNationsById(toFetch, eventConsumer));
             }
         } else {
-            fetched = updateNations(r -> r.setId(idsFinal), eventConsumer);
+            fetched = updateNations(r -> r.setId(idsFinal), eventConsumer, eventConsumer != null);
         }
         if (ids.size() >= 500 && fetched.isEmpty()) {
-            System.out.println("No nations fetched");
             return fetched;
         }
 
@@ -1033,6 +1096,8 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
     }
 
     public void updateCitiesV2(Consumer<Event> eventConsumer) {
+        dirtyCities.clear();
+        dirtyCityNations.clear();
         Map<Integer, Integer> citiesToDeleteToNationId = new HashMap<>();
         synchronized (citiesByNation) {
             for (Map.Entry<Integer, Object> natEntry : citiesByNation.entrySet()) {
@@ -1096,7 +1161,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
 
         int newDirty = dirtyCities.size() - originalDirtySize;
         if (newDirty > 500) {
-            System.out.println("Dirty cities " + newDirty);
+            System.out.println("Marking cities as outdated " + newDirty);
         }
 
         if (!citiesToDeleteToNationId.isEmpty()) {
@@ -1104,42 +1169,54 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 int cityId = entry.getKey();
                 int nationId = entry.getValue();
                 synchronized (citiesByNation) {
-                   ArrayUtil.removeElement(DBCity.class, citiesByNation, nationId, cityId);
+                    ArrayUtil.removeElement(DBCity.class, citiesByNation, nationId, cityId);
                 }
             }
-            System.out.println("Delete cities 1 " + citiesToDeleteToNationId.size());
             deleteCitiesInDB(citiesToDeleteToNationId.keySet());
         }
     }
 
     public void updateAllCities(Consumer<Event> eventConsumer) {
         PoliticsAndWarV3 v3 = Locutus.imp().getV3();
-        List<City> cities = v3.fetchCitiesWithInfo(false,null, true);
+        dirtyCities.clear();
+        dirtyCityNations.clear();
+        List<City> cities = v3.readSnapshot(PagePriority.API_CITIES_AUTO_ALL, City.class);
         Map<Integer, Map<Integer, City>> nationIdCityIdCityMap = new Int2ObjectOpenHashMap<>();
         for (City city : cities) {
             nationIdCityIdCityMap.computeIfAbsent(city.getNation_id(), f -> new Int2ObjectOpenHashMap<>())
                     .put(city.getId(), city);
         }
-        updateCities(nationIdCityIdCityMap, eventConsumer);
+        if (!nationIdCityIdCityMap.isEmpty()) {
+            updateCities(nationIdCityIdCityMap, eventConsumer);
+            long cutoff = System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(1);
+            Set<Integer> deletedNations = getNationsMatching(f -> f.getVm_turns() == 0 && !nationIdCityIdCityMap.containsKey(f.getId()) && f.getDate() > cutoff).stream().map(DBNation::getNation_id).collect(Collectors.toSet());
+            deleteNations(deletedNations, eventConsumer);
+        }
     }
 
-    public void updateCitiesOfNations(Set<Integer> nationIds, boolean priority, boolean bulk, Consumer<Event> eventConsumer) {
-        PoliticsAndWarV3 v3 = Locutus.imp().getV3();
-
-        List<Integer> idList = new ArrayList<>(nationIds);
+    private int estimateCities(Set<Integer> nationIds) {
         int estimatedCitiesToFetch = 0;
-        for (int nationId : idList) {
+        for (int nationId : nationIds) {
             DBNation nation = getNation(nationId);
             if (nation == null) estimatedCitiesToFetch++;
             else estimatedCitiesToFetch += nation.getCities();
         }
+        return estimatedCitiesToFetch;
+    }
 
+    public void updateCitiesOfNations(Set<Integer> nationIds, boolean priority, boolean bulk, Consumer<Event> eventConsumer) {
+        PoliticsAndWarV3 v3 = Locutus.imp().getV3();
+        List<Integer> idList = new ArrayList<>(nationIds);
+        if (bulk) markDirtyIncorrectCities(true, true);
+        int estimatedCitiesToFetch = estimateCities(nationIds);
+        if (estimatedCitiesToFetch > 500) {
+            updateAllCities(eventConsumer);
+            return;
+        }
         if (bulk) {
-            // Pad with most outdated cities, to make full use of api call
             if (estimatedCitiesToFetch < 490) { // Slightly below 500 to avoid off by 1 errors with api
                 int numToFetch = 490 - idList.size();
                 List<Integer> mostActiveNations = getMostActiveNationIdsLimitCities(numToFetch, new HashSet<>(idList));
-                System.out.println("Fetching active nation cities: " + mostActiveNations.size());
                 idList.addAll(mostActiveNations);
             }
         }
@@ -1147,9 +1224,9 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         for (int i = 0; i < 500 && !idList.isEmpty(); i += 500) {
             int end = Math.min(i + 500, idList.size());
             List<Integer> toFetch = idList.subList(i, end);
+            toFetch.forEach(dirtyCityNations::remove);
             List<City> cities = v3.fetchCitiesWithInfo(priority, r -> r.setNation_id(toFetch), true);
             Map<Integer, Map<Integer, City>> completeCities = new Int2ObjectOpenHashMap<>();
-            System.out.println("Return cities " + cities.size());
             for (City city : cities) {
                 completeCities.computeIfAbsent(city.getNation_id(), f -> new Int2ObjectOpenHashMap<>())
                         .put(city.getId(), city);
@@ -1161,6 +1238,13 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
     public boolean updateDirtyCities(boolean priority, Consumer<Event> eventConsumer) {
         List<Integer> cityIds = new ArrayList<>();
         PoliticsAndWarV3 v3 = Locutus.imp().getV3();
+        markDirtyIncorrectNations(true, true);
+
+        int dirtyNationCities = estimateCities(dirtyCityNations);
+        if (dirtyCities.size() > 500 || dirtyNationCities > 500) {
+            updateAllCities(eventConsumer);
+            return true;
+        }
 
         while (!dirtyCities.isEmpty()) {
             try {
@@ -1193,9 +1277,13 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             updateCities(cities, eventConsumer);
         }
         if (!deletedCities.isEmpty()) {
-            System.out.println("Delete cities 2 " + deletedCities.size());
             deleteCities(deletedCities, eventConsumer);
         }
+
+        if (!dirtyCityNations.isEmpty()) {
+            updateCitiesOfNations(dirtyCityNations, priority, false, eventConsumer);
+        }
+
         return true;
     }
 
@@ -1259,10 +1347,13 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                     NationDB.this.dirtyCities.remove(city.getId());
                 }
             }
-
             synchronized (citiesByNation) {
                 Object map = citiesByNation.get(nationId);
                 if (map != null) {
+                    int existingCities = ArrayUtil.countElements(DBCity.class, map);
+                    if (existingCities == cities.size()) {
+                        dirtyCityNations.remove(nationId);
+                    }
                     if (deleteMissing) {
                         IntList toDelete = new IntArrayList();
                         ArrayUtil.iterateElements(DBCity.class, map, dbCity -> {
@@ -1295,7 +1386,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             }
         }
         if (!citiesToDelete.isEmpty()) {
-            System.out.println("Delete cities 3 " + citiesToDelete.size());
             deleteCitiesInDB(citiesToDelete);
         }
         if (!dirtyCities.isEmpty()) {
@@ -1429,7 +1519,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         DBCity existing = getDBCity(city.getNation_id(), city.getId());
 
         if (existing != null) {
-            if (city.getNation_id() == 510930) System.out.println("Remove:|| Updating city " + city.getId() + " " + city.getName() + " " + city.getNation_id());
             buffer.set(existing);
             existing.set(city);
             if (existing.runChangeEvents(city.getNation_id(), buffer, eventConsumer)) {
@@ -1437,7 +1526,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             }
         } else {
             existing = new DBCity(city);
-            if (city.getNation_id() == 510930) System.out.println("Remove:||  New city " + city.getId() + " " + city.getName() + " " + city.getNation_id());
             synchronized (citiesByNation) {
                 ArrayUtil.addElement(DBCity.class, citiesByNation, city.getNation_id(), existing);
             }
@@ -1494,6 +1582,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         int total = 0;
         Set<Integer> treatiesToDelete = new LinkedHashSet<>();
         long currentTurn = TimeUtil.getTurn();
+        List<Event> postAsync = null;
 
         SelectBuilder builder = getDb().selectBuilder("TREATIES2").select("*");
         try (ResultSet rs = builder.executeRaw()) {
@@ -1507,7 +1596,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 }
                 if (currentTurn > treaty.getTurnEnds()) {
                     if (Locutus.imp() != null) {
-                        new TreatyExpireEvent(treaty).post();
+                        ((postAsync == null) ? postAsync = new ArrayList<>() : postAsync).add(new TreatyExpireEvent(treaty));
                     }
                     treatiesToDelete.add(treaty.getId());
                     continue;
@@ -1518,7 +1607,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 total++;
             }
         }
-
+        if (postAsync != null && Locutus.imp() != null) Locutus.imp().runEventsAsync(postAsync);
         deleteTreatiesInDB(treatiesToDelete);
         return total;
     }
@@ -1652,6 +1741,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
 
     public void updateNationsV2(boolean includeVM, Consumer<Event> eventConsumer) {
         try {
+
             List<SNationContainer> nations = Locutus.imp().getPnwApiV2().getNationsByScore(includeVM, 999999, -1).getNationsContainer();
 
             List<DBNation> toSave = new ArrayList<>();
@@ -1678,7 +1768,6 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                         eventConsumer.accept(new NationCreateEvent(null, existing));
                     }
                     toSave.add(existing);
-                    System.out.println("Existing is null dirty");
                     dirtyNations.add(nation.getNationid());
                 } else {
                     expected.remove(existing.getNation_id());
@@ -1697,13 +1786,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
 
             if (!toSave.isEmpty()) saveNations(toSave);
 
-            if (!dirtyNationCities.isEmpty()) {
-                System.out.println("Dirty cities " + dirtyNationCities.size());
-                updateCitiesOfNations(dirtyNationCities, false, true, eventConsumer);
-            }
-
             if (!expected.isEmpty()) {
-                System.out.println("Add dirty " + expected.size());
                 dirtyNations.addAll(expected);
             }
         } catch (IOException e) {
@@ -1793,7 +1876,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 }
             }
         }
-        Set<Integer> fetched = updateNations(r -> r.setCreated_after(new Date(minDate)), eventConsumer);
+        Set<Integer> fetched = updateNations(r -> r.setCreated_after(new Date(minDate)), eventConsumer, eventConsumer != null);
         expected.removeAll(fetched);
         dirtyNations.addAll(expected);
         return fetched;
@@ -1811,7 +1894,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             }
         }
         Set<Integer> deleted = new HashSet<>();
-        Set<Integer> fetched = updateNations(f -> f.setVmode(false), eventConsumer);
+        Set<Integer> fetched = updateNations(f -> f.setVmode(false), eventConsumer, eventConsumer != null);
         for (int id : currentNations) {
             if (!fetched.contains(id)) deleted.add(id);
         }
@@ -1821,61 +1904,114 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         return fetched;
     }
 
-    public Set<Integer> updateAllNations(Consumer<Event> eventConsumer) {
+    public Set<Integer> updateAllNations(Consumer<Event> eventConsumer, boolean updateCitiesAndPositions) {
         Set<Integer> currentNations;
         synchronized (nationsById) {
             currentNations = new HashSet<>(nationsById.keySet());
         }
         Set<Integer> deleted = new HashSet<>();
-        Set<Integer> fetched = updateNations(f -> {}, eventConsumer);
+        Set<Integer> fetched = updateNationsCustom(onEachNation -> {
+            PoliticsAndWarV3 v3 = Locutus.imp().getV3();
+            List<Nation> nations = v3.readSnapshot(PagePriority.API_NATIONS_AUTO, Nation.class);
+            for (Nation nation : nations) {
+                onEachNation.test(nation);
+            }
+        }, eventConsumer, updateCitiesAndPositions);
+        long cutoff = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(2);
         for (int id : currentNations) {
-            if (!fetched.contains(id)) deleted.add(id);
+            if (!fetched.contains(id)) {
+                DBNation nation = getNation(id);
+                if (nation != null && nation.getDate() < cutoff) {
+                    deleted.add(id);
+                }
+            }
         }
-        for (int id : deleted) {
-            markNationDirty(id);
-        }
-//        deleteNations(deleted, eventConsumer);
+//        for (int id : deleted) {
+//            markNationDirty(id);
+//        }
+        deleteNations(deleted, eventConsumer);
         return fetched;
+    }
+
+    public void markDirtyIncorrectCities(boolean score, boolean cities) {
+        markDirtyIncorrectCities(getNationsMatching(f -> f.getVm_turns() == 0), score, cities);
+    }
+
+    public void markDirtyIncorrectCities(Set<DBNation> nations, boolean score, boolean cities) {
+        for (DBNation nation : nations) {
+            Map<Integer, DBCity> cityMap = getCitiesV3(nation.getNation_id());
+            if (cities && nation.getCities() != cityMap.size()) {
+                dirtyCityNations.add(nation.getNation_id());
+            } else if (score && Math.round(100 * (PW.estimateScore(this, nation) - nation.getScore())) != 0) {
+                cityMap.forEach((key, value) -> dirtyCities.add(key));
+            }
+        }
     }
 
     public void markDirtyIncorrectNations(boolean score, boolean cities) {
         int originalSize = dirtyNations.size();
         for (DBNation nation : getNationsMatching(f -> f.getVm_turns() == 0)) {
-            if (score && Math.round(100 * (nation.estimateScore() - nation.getScore())) > 0.01) {
+            if (score && Math.round(100 * (PW.estimateScore(this, nation) - nation.getScore())) != 0) {
                 dirtyNations.add(nation.getNation_id());
-            } else if (cities && nation.getCities() != getCitiesV3(nation.getNation_id()).size()) {
-                dirtyNations.add(nation.getNation_id());
+            } else {
+                Map<Integer, DBCity> cityMap = getCitiesV3(nation.getNation_id());
+                if (cities && nation.getCities() != cityMap.size()) {
+                    dirtyNations.add(nation.getNation_id());
+                } else {
+                    for (MilitaryUnit unit : new MilitaryUnit[]{MilitaryUnit.SOLDIER, MilitaryUnit.TANK, MilitaryUnit.AIRCRAFT, MilitaryUnit.SHIP}) {
+                        MilitaryBuilding building = unit.getBuilding();
+                        int unitCap = 0;
+                        for (DBCity city : cityMap.values()) {
+                            unitCap += city.getBuilding(building) * building.getUnitCap() ;
+                        }
+                        if (nation.getUnits(unit) > unitCap) {
+                            dirtyNations.add(nation.getNation_id());
+                            break;
+                        }
+                    }
+                }
             }
         }
         int added = dirtyNations.size() - originalSize;
-        if (added > 10) {
-            System.out.println("Added " + added + " nations to dirty list");
+        if (added > 1000) {
+            System.out.println("Added " + added + " nations to outdated list");
         }
     }
 
     public Set<Integer> updateNations(Collection<Nation> nations, Consumer<Event> eventConsumer, long timestamp) {
         Map<DBNation, DBNation> nationChanges = new LinkedHashMap<>();
-        Set<Integer> nationsFetched = new HashSet<>();
+        Set<Integer> nationsIdsFetched = new HashSet<>();
+        Set<DBNation> nationsFetched = new HashSet<>();
         for (Nation nation : nations) {
             if (nation.getId() != null) {
-                nationsFetched.add(nation.getId());
+                nationsIdsFetched.add(nation.getId());
                 if (!NationDB.this.dirtyNations.isEmpty()) {
                     NationDB.this.dirtyNations.remove(nation.getId());
                 }
             }
             updateNation(nation, eventConsumer, nationChanges::put, timestamp);
+            DBNation dbNat = DBNation.getById(nation.getId());
+            if (dbNat != null) {
+                nationsFetched.add(dbNat);
+            }
         }
-        updateNationCitiesAndPositions(nationChanges, eventConsumer);
-        return nationsFetched;
+        updateNationCitiesAndPositions(nationsFetched, nationChanges, eventConsumer);
+        return nationsIdsFetched;
 
     }
 
-    public Set<Integer> updateNations(Consumer<NationsQueryRequest> filter, Consumer<Event> eventConsumer) {
+    public Set<Integer> updateNations(Consumer<NationsQueryRequest> filter, Consumer<Event> eventConsumer, boolean updateCitiesAndPositions) {
+        return updateNationsCustom(onEachNation -> {
+            PoliticsAndWarV3 v3 = Locutus.imp().getV3();
+            v3.fetchNationsWithInfo(false, filter, onEachNation);
+        }, eventConsumer, updateCitiesAndPositions);
+    }
 
+    public Set<Integer> updateNationsCustom(Consumer<Predicate<Nation>> fetchNationTask, Consumer<Event> eventConsumer, boolean updateCitiesAndPositions) {
         Map<DBNation, DBNation> nationChanges = new LinkedHashMap<>();
         Set<Integer> nationsFetched = new HashSet<>();
-
         long timestamp = System.currentTimeMillis();
+        Set<DBNation> nations = new HashSet<>();
         Predicate<Nation> onEachNation = nation -> {
             if (nation.getId() != null) {
                 nationsFetched.add(nation.getId());
@@ -1884,70 +2020,40 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 }
             }
             updateNation(nation, eventConsumer, (prev, curr) -> nationChanges.put(curr, prev), timestamp);
+            DBNation dbNat = getNation(nation.getId());
+            if (dbNat != null) nations.add(dbNat);
             return false;
         };
-        PoliticsAndWarV3 v3 = Locutus.imp().getV3();
-        v3.fetchNationsWithInfo(false, filter, onEachNation);
-
-        updateNationCitiesAndPositions(nationChanges, eventConsumer);
+        fetchNationTask.accept(onEachNation);
+        if (updateCitiesAndPositions) {
+            updateNationCitiesAndPositions(nations, nationChanges, eventConsumer);
+        }
         return nationsFetched;
     }
 
-    public void updateNationCitiesAndPositions(Map<DBNation, DBNation> nationChanges,
+    public void updateNationCitiesAndPositions(Collection<DBNation> allNations, Map<DBNation, DBNation> nationChanges,
                                       Consumer<Event> eventConsumer) {
-        if (nationChanges.isEmpty()) return;
-
         boolean fetchCitiesIfNew = true;
-        boolean fetchCitiesIfOutdated = true;
-        boolean fetchAlliancesIfOutdated = true;
-        boolean fetchPositionsIfOutdated = true;
-        boolean fetchMostActiveIfNoneOutdated = true;
 
-        Set<DBNation> nationsToSave = new LinkedHashSet<>();
-        for (Map.Entry<DBNation, DBNation> entry : nationChanges.entrySet()) {
-            DBNation nation = entry.getKey();
-            if (nation == null) nation = entry.getValue();
-            nationsToSave.add(nation);
-        }
-        saveNations(nationsToSave);
-
-        Set<Integer> fetchCitiesOfNations = new HashSet<>();
-
-        if (fetchCitiesIfNew) {
-            // num cities has changed
+        if (!nationChanges.isEmpty()) {
+            Set<DBNation> nationsToSave = new LinkedHashSet<>();
             for (Map.Entry<DBNation, DBNation> entry : nationChanges.entrySet()) {
-                DBNation prev = entry.getValue();
-                DBNation curr = entry.getKey();
-                if (curr == null) continue;
-                if (prev == null || curr.getCities() != prev.getCities()) {
-                    fetchCitiesOfNations.add(curr.getNation_id());
+                DBNation nation = entry.getKey();
+                if (nation == null) nation = entry.getValue();
+                nationsToSave.add(nation);
+            }
+            saveNations(nationsToSave);
+
+            if (fetchCitiesIfNew) {
+                for (Map.Entry<DBNation, DBNation> entry : nationChanges.entrySet()) {
+                    DBNation prev = entry.getValue();
+                    DBNation curr = entry.getKey();
+                    if (curr == null) continue;
+                    if (prev == null || curr.getCities() != prev.getCities()) {
+                        dirtyCityNations.add(curr.getNation_id());
+                    }
                 }
             }
-        }
-        if (fetchCitiesIfOutdated) {
-            for (Map.Entry<DBNation, DBNation> entry : nationChanges.entrySet()) {
-                DBNation prev = entry.getValue();
-                DBNation curr = entry.getKey();
-                if (curr == null) continue;
-                if (prev == null || (Math.round((curr.getScore() - prev.getScore()) * 100) != 0 && Math.round(100 * (curr.estimateScore() - curr.getScore())) != 0)) {
-                    fetchCitiesOfNations.add(curr.getNation_id());
-                }
-            }
-        }
-
-        System.out.println("Updated nations.\n" +
-                "Changes: " + nationChanges.size() + "\n" +
-                "Cities: " + fetchCitiesOfNations.size());
-        System.out.println("Dirty " + dirtyNations.size());
-
-
-        if (!fetchCitiesOfNations.isEmpty() || (fetchMostActiveIfNoneOutdated)) {
-            System.out.println("Update cities " + fetchCitiesOfNations.size());
-            updateCitiesOfNations(fetchCitiesOfNations, false, true, eventConsumer);
-        }
-
-        if (fetchAlliancesIfOutdated || fetchPositionsIfOutdated) {
-            updateOutdatedAlliances(fetchPositionsIfOutdated, eventConsumer);
         }
     }
 
@@ -2134,13 +2240,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             nationTable.create(getDb());
 
             // add gdp column to NATIONS2 BIGINT NOT NULL default 0
-            try {
-                try (PreparedStatement close = prepareQuery("ALTER TABLE NATIONS2 ADD COLUMN `gdp` BIGINT NOT NULL DEFAULT 0")) {
-                    close.execute();
-                }
-            } catch (SQLException ignore) {
-            }
-
+            executeStmt("ALTER TABLE NATIONS2 ADD COLUMN `gdp` BIGINT NOT NULL DEFAULT 0", true);
             update("DROP TABLE IF EXISTS NATIONS_WAR_SNAPSHOT");
 
             TablePreset.create("POSITIONS")
@@ -2200,7 +2300,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 e.printStackTrace();
             }
             if (getTableColumns("NATION_META").stream().noneMatch(c -> c.equalsIgnoreCase("date_updated"))) {
-                executeStmt("ALTER TABLE NATION_META ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis());
+                executeStmt("ALTER TABLE NATION_META ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis(), true);
             }
         }
         ;
@@ -2220,10 +2320,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         executeStmt("CREATE INDEX IF NOT EXISTS index_mil_date ON NATION_MIL_HISTORY (date);");
         {
             executeStmt("CREATE TABLE IF NOT EXISTS `CITY_BUILDS` (`id` INT NOT NULL PRIMARY KEY, `nation` INT NOT NULL, `created` BIGINT NOT NULL, `infra` INT NOT NULL, `land` INT NOT NULL, `powered` BOOLEAN NOT NULL, `improvements` BLOB NOT NULL, `update_flag` BIGINT NOT NULL, nuke_date BIGINT NOT NULL)");
-            try (PreparedStatement stmt = getConnection().prepareStatement("ALTER TABLE CITY_BUILDS ADD COLUMN nuke_date BIGINT NOT NULL DEFAULT 0")) {
-                stmt.executeUpdate();
-            } catch (SQLException ignore) {
-            }
+            executeStmt("ALTER TABLE CITY_BUILDS ADD COLUMN nuke_date BIGINT NOT NULL DEFAULT 0", true);
         }
 
 
@@ -2668,6 +2765,23 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         }
     }
 
+    public int countTreasures(int allianceId) {
+        synchronized (nationsByAlliance) {
+            Map<Integer, DBNation> nations = nationsByAlliance.get(allianceId);
+            if (nations == null || nations.isEmpty()) return 0;
+            int count = 0;
+            for (DBNation nation : nations.values()) {
+                if (nation.getPositionEnum().id <= Rank.APPLICANT.id || nation.getVm_turns() > 0) continue;
+                synchronized (treasuresByNation) {
+                    Set<DBTreasure> treasures = treasuresByNation.get(nation.getId());
+                    if (treasures == null) continue;
+                    count += treasures.size();
+                }
+            }
+            return count;
+        }
+    }
+
     public Set<DBTreasure> getTreasure(int nationId) {
         synchronized (treasuresByNation) {
             Set<DBTreasure> treasures = treasuresByNation.get(nationId);
@@ -3027,10 +3141,8 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                 }
             }
         }
-        System.out.println("Score " + score.size());
         // Sorted
         score = new SummedMapRankBuilder<>(score).sort().get();
-        System.out.println("Score 2 " + score.size());
         Set<DBAlliance> result = new LinkedHashSet<>();
         for (int aaId : score.keySet()) {
             DBAlliance alliance = getAlliance(aaId);
@@ -3261,7 +3373,14 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
     }
 
     private Map<OrbisMetric, Map<Long, Double>> getMetrics(Collection<OrbisMetric> metrics, boolean isTurn, long start, long end) {
-        List<Integer> ids = metrics.stream().filter(f -> f.isTurn() == isTurn).map(Enum::ordinal).toList();
+        List<Integer> ids = new ArrayList<>(metrics.stream().filter(f -> f.isTurn() == isTurn).map(Enum::ordinal).toList());
+        if (isTurn) {
+            start = TimeUtil.getTurn(start);
+            end = end == Long.MAX_VALUE ? end : TimeUtil.getTurn(end);
+        } else {
+            start = TimeUtil.getDay(start);
+            end = end == Long.MAX_VALUE ? end : TimeUtil.getDay(end);
+        }
         if (ids.isEmpty()) return new HashMap<>();
         if (ids.size() == 1) {
             OrbisMetric metric = metrics.iterator().next();
@@ -3272,9 +3391,11 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         String turnOrDayCol = isTurn ? "turn" : "day";
         String query = "SELECT * FROM " + table + " WHERE metric in " + StringMan.getString(ids) + " AND " + turnOrDayCol + " >= ? AND " + turnOrDayCol + " <= ?";
         Map<OrbisMetric, Map<Long, Double>> result = new Object2ObjectOpenHashMap<>();
+        long finalStart = start;
+        long finalEnd = end;
         query(query, (ThrowingConsumer<PreparedStatement>) stmt -> {
-            stmt.setLong(1, start);
-            stmt.setLong(2, end);
+            stmt.setLong(1, finalStart);
+            stmt.setLong(2, finalEnd);
         }, (ThrowingConsumer<ResultSet>) rs -> {
             while (rs.next()) {
                 int metricId = rs.getInt("metric");
@@ -3493,20 +3614,20 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         }
     }
 
-    private int[] saveNationLoot(List<LootEntry> entries) {
+    public int[] saveLoot(List<LootEntry> entries, Consumer<Event> eventConsumer) {
         if (entries.isEmpty()) return new int[0];
-        /*
-         .putColumn("id", ColumnType.INT.struct().setPrimary(false).setNullAllowed(false).configure(f -> f.apply(null)))
-                    .putColumn("total_rss", ColumnType.INT.struct().setPrimary(false).setNullAllowed(false).configure(f -> f.apply(null)))
-                    .putColumn("date", ColumnType.INT.struct().setPrimary(false).setNullAllowed(false).configure(f -> f.apply(null)))
-                    .putColumn("type", Col
-         */
         long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1);
         for (LootEntry entry : entries) {
             if (entry.getDate() < cutoff) continue;
-            new LootInfoEvent(entry).post();
+            int id = entry.getId();
+            if (id < 0) {
+                DBAlliance aa = DBAlliance.get(-id);
+                if (aa != null) {
+                    aa.setLoot(entry);
+                }
+            }
+            if (eventConsumer != null) eventConsumer.accept(new LootInfoEvent(entry));
         }
-
         String query = "INSERT OR REPLACE INTO `NATION_LOOT3` (`id`, `total_rss`, `date`, `type`) VALUES(?,?,?,?)";
         ThrowingBiConsumer<LootEntry, PreparedStatement> setLoot = new ThrowingBiConsumer<LootEntry, PreparedStatement>() {
             @Override
@@ -3525,7 +3646,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         }
     }
 
-    private void importLegacyNationLoot(boolean fromAttacks) throws SQLException {
+    private void importLegacyNationLoot(boolean fromAttacks, Consumer<Event> eventConsumer) throws SQLException {
         List<LootEntry> lootInfoList = new ArrayList<>();
         if (tableExists("NATION_LOOT")) {
 
@@ -3563,22 +3684,9 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
             }
 
             if (!lootInfoList.isEmpty()) {
-                saveNationLoot(lootInfoList);
+                saveLoot(lootInfoList, eventConsumer);
             }
         }
-    }
-
-    public void saveAllianceLoot(int allianceId, long date, double[] loot, NationLootType type) {
-        LootEntry entry = new LootEntry(-allianceId, loot, date, type);
-        DBAlliance aa = DBAlliance.get(allianceId);
-        if (aa != null) {
-            aa.setLoot(entry);
-        }
-        saveNationLoot(List.of(entry));
-    }
-    public void saveLoot(int nationId, long date, double[] loot, NationLootType type) {
-        LootEntry entry = new LootEntry(nationId, loot, date, type);
-        saveNationLoot(List.of(entry));
     }
 
     public LootEntry getAllianceLoot(int allianceId) {
@@ -3631,7 +3739,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
     }
 
     public Set<Long> getActivity(int nationId) {
-        return getActivity(nationId, 0);
+        return getActivity(nationId, 0, Long.MAX_VALUE);
     }
 
     public Map<Integer, Long> getLastActiveTurns(Set<Integer> nationIds, long turn) {
@@ -3684,10 +3792,71 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
 
     public Set<Long> getActivityByDay(int nationId, long minTurn) {
         Set<Long> result = new LinkedHashSet<>();
-        for (long turn : getActivity(nationId, minTurn)) {
+        for (long turn : getActivity(nationId, minTurn, Long.MAX_VALUE)) {
             result.add(turn / 12);
         }
         return result;
+    }
+
+    public Map<Integer, Set<Long>> getActivityByDay(long minDate, long maxDate) {
+        return getActivityByDay(minDate, maxDate, null);
+    }
+
+    public Map<Integer, Set<Long>> getActivityByDay(long minDate, long maxDate, Predicate<Integer> includeNation) {
+        // dates are inclusive
+        long minTurn = TimeUtil.getTurn(minDate);
+        long maxTurn = TimeUtil.getTurn(maxDate);
+        try (PreparedStatement stmt = prepareQuery("select nation, (`turn`/12) FROM ACTIVITY WHERE turn >= ? AND turn <= ?")) {
+            stmt.setLong(1, minTurn);
+            stmt.setLong(2, maxTurn);
+
+            Map<Integer, Set<Long>> result = new Int2ObjectOpenHashMap<>();
+            BiConsumer<Integer, Long> applyNation = includeNation == null ?
+                    (nation, day) -> result.computeIfAbsent(nation, f -> new LongOpenHashSet()).add(day) : (nation, day) -> {
+                if (includeNation.test(nation)) {
+                    result.computeIfAbsent(nation, f -> new LongOpenHashSet()).add(day);
+                }
+            };
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    int id = rs.getInt(1);
+                    long day = rs.getLong(2);
+                    applyNation.accept(id, day);
+                }
+            }
+            return result;
+        } catch (SQLException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
+    }
+
+    public Map<Integer, Set<Long>> getActivityByTurn(long minTurn, long maxTurn, Predicate<Integer> includeNation) {
+        try (PreparedStatement stmt = prepareQuery("select nation, `turn` FROM ACTIVITY WHERE turn >= ? AND turn <= ?")) {
+            stmt.setLong(1, minTurn);
+            stmt.setLong(2, maxTurn);
+
+            Map<Integer, Set<Long>> result = new Int2ObjectOpenHashMap<>();
+            BiConsumer<Integer, Long> applyNation = includeNation == null ?
+                    (nation, turn) -> result.computeIfAbsent(nation, f -> new LongOpenHashSet()).add(turn) : (nation, turn) -> {
+                if (includeNation.test(nation)) {
+                    result.computeIfAbsent(nation, f -> new LongOpenHashSet()).add(turn);
+                }
+            };
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    int id = rs.getInt(1);
+                    long turn = rs.getLong(2);
+                    applyNation.accept(id, turn);
+                }
+            }
+            return result;
+        } catch (SQLException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
     }
 
     public Map<Long, Set<Integer>> getActivityByDay(long minDate, Predicate<Integer> allowNation) {
@@ -3712,10 +3881,16 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         }
     }
 
-    public Set<Long> getActivity(int nationId, long minTurn) {
-        try (PreparedStatement stmt = prepareQuery("select * FROM ACTIVITY WHERE nation = ? AND turn > ? ORDER BY turn ASC")) {
+    public Set<Long> getActivity(int nationId, long minTurn, long maxTurn) {
+        String query = "SELECT * FROM ACTIVITY WHERE nation = ? AND turn > ?";
+        if (maxTurn != Long.MAX_VALUE) {
+            query += " AND turn <= ?";
+        }
+        query += " ORDER BY turn ASC";
+        try (PreparedStatement stmt = prepareQuery(query)) {
             stmt.setInt(1, nationId);
             stmt.setLong(2, minTurn);
+            if (maxTurn != Long.MAX_VALUE) stmt.setLong(3, maxTurn);
 
             Set<Long> set = new LinkedHashSet<>();
 
@@ -4104,7 +4279,7 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
                     return rs.getInt("amount");
                 }
             }
-            DBNation dbNation = Locutus.imp().getNationDB().getNation(nationId);
+            DBNation dbNation = getNation(nationId);
             return dbNation != null ? dbNation.getUnits(unit) : 0;
         } catch (SQLException e) {
             e.printStackTrace();
@@ -4252,8 +4427,11 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         return getRemovesByNation(nationId, null);
     }
     public List<AllianceChange> getRemovesByNation(int nationId, Long date) {
-        try (PreparedStatement stmt = prepareQuery("select * FROM KICKS2 WHERE nation = ? " + (date != null ? " AND date < ? " : "") + "ORDER BY date DESC")) {
+        try (PreparedStatement stmt = prepareQuery("select * FROM KICKS2 WHERE nation = ? " + (date != null && date != 0 ? "AND date > ? " : "") + "ORDER BY date DESC")) {
             stmt.setInt(1, nationId);
+            if (date != null) {
+                stmt.setLong(2, date);
+            }
 
             List<AllianceChange> list = new ObjectArrayList<>();
 
@@ -4340,8 +4518,9 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         List<AllianceChange> list = new ObjectArrayList<>();
         try (PreparedStatement stmt = prepareQuery("select * FROM KICKS2 WHERE (from_aa = ? OR to_aa = ?) " + (cutoff > 0 ? "AND date > ? " : "") + "ORDER BY date DESC")) {
             stmt.setInt(1, allianceId);
+            stmt.setInt(2, allianceId);
             if (cutoff > 0) {
-                stmt.setLong(2, cutoff);
+                stmt.setLong(3, cutoff);
             }
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
@@ -4611,10 +4790,8 @@ public class NationDB extends DBMainV2 implements SyncableDatabase {
         if (ids.isEmpty()) return;
 
         if (!citiesToDelete.isEmpty()) {
-            System.out.println("Delete cities 3 " + citiesToDelete.size());
             deleteCitiesInDB(citiesToDelete);
         }
-        System.out.println("Delete nations " + StringMan.getString(ids));
         deleteNationsInDB(ids);
     }
 

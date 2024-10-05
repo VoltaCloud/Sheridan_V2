@@ -146,6 +146,8 @@ public enum Roles {
 
     ESPIONAGE_ALERTS(41, "Role to receive pings when an alliance member gets spied", GuildKey.DEFENSE_WAR_CHANNEL),
 
+    ENEMY_ALERT_OFFLINE(42, "Able to receive enemy alerts when offline or invisible on discord (unless opt out, or player setting overrides)", GuildKey.BEIGE_ALERT_CHANNEL),
+
 
     ;
 
@@ -226,7 +228,7 @@ public enum Roles {
         if (role != null) {
             return role.getName();
         }
-        return "No " + name() + " role set. Use " + CM.role.setAlias.cmd.create(name(), null, null, null);
+        return "No " + name() + " role set. Use " + CM.role.setAlias.cmd.locutusRole(name()).discordRole(null);
     }
 
     public GuildSetting getKey() {
@@ -295,7 +297,7 @@ public enum Roles {
     }
 
     public boolean hasOnRoot(User user) {
-        if (user.getIdLong() == Settings.INSTANCE.ADMIN_USER_ID) return true;
+        if (user.getIdLong() == Locutus.loader().getAdminUserId()) return true;
         if (Locutus.imp().getServer() == null) {
             return false;
         }
@@ -320,8 +322,8 @@ public enum Roles {
 
     public boolean has(Member member) {
         if (member == null) return false;
-        if (member.getIdLong() == Settings.INSTANCE.APPLICATION_ID) return true;
-        if (member.getIdLong() == Settings.INSTANCE.ADMIN_USER_ID) return true;
+        if (member.getIdLong() == Locutus.loader().getAdminUserId()) return true;
+        if (member.getIdLong() == Locutus.loader().getAdminUserId()) return true;
 
         if (member.isOwner()) return true;
         Role role = toRole(member.getGuild());
@@ -352,7 +354,7 @@ public enum Roles {
     public boolean has(User user, Guild server) {
         if (user == null) return false;
         if (user.getIdLong() == Settings.INSTANCE.APPLICATION_ID) return true;
-        if (user.getIdLong() == Settings.INSTANCE.ADMIN_USER_ID) return true;
+        if (user.getIdLong() == Locutus.loader().getAdminUserId()) return true;
         if (server == null) return false;
         if (!server.isMember(user)) {
             return false;

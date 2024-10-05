@@ -1,5 +1,8 @@
 package link.locutus.discord.commands.manager.v2.command;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import gg.jte.generated.precompiled.command.JteparametriccallableGenerated;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import link.locutus.discord.Locutus;
@@ -224,7 +227,8 @@ public class ParametricCallable implements ICommand {
 
     public static List<ParametricCallable> generateFromClass(CommandCallable parent, Class clazz, Object object, ValueStore store) {
         List<ParametricCallable> cmds = new ArrayList<>();
-        for (Method method : clazz.getDeclaredMethods()) {
+        for (Method method : clazz.getMethods()) {
+            if (method.getDeclaringClass() != clazz) continue;
             ParametricCallable parametric = generateFromMethod(parent, object, method, store);
             if (parametric != null) cmds.add(parametric);
         }
@@ -254,6 +258,25 @@ public class ParametricCallable implements ICommand {
 
     public Type getReturnType() {
         return returnType;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof ParametricCallable parametric) {
+            if (method != null && parametric.method != null) {
+                return method.equals(parametric.method);
+            }
+            return getFullPath().equals(parametric.getFullPath());
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        if (method != null) {
+            return method.hashCode();
+        }
+        return getFullPath().hashCode();
     }
 
     @Override
@@ -452,13 +475,12 @@ public class ParametricCallable implements ICommand {
                         if (!parameter.getBinding().isConsumer(stack.getStore())) {
                             value = store.getProvided(parameter.getBinding().getKey(), false);
                         } else {
-                            if (parameter.getDefaultValue() == null) {
+                            if (parameter.getDefaultValue() == null || parameter.getDefaultValue().length == 0) {
                                 continue;
                             } else {
                                 unparsed = parameter.getDefaultValueString();
-                                stack.add(parameter.getDefaultValue());
+                                value = locals.get(parameter.getBinding().getKey()).apply(stack.getStore(), unparsed);
                             }
-                            continue;
                         }
                     } else if (stack.hasNext() || !parameter.isOptional() || (parameter.getDefaultValue() != null && parameter.getDefaultValue().length != 0)) {
                         if (parameter.getBinding().isConsumer(stack.getStore()) && !stack.hasNext()) {
@@ -467,7 +489,6 @@ public class ParametricCallable implements ICommand {
                         }
                         int originalRemaining = stack.remaining();
                         List<String> remaining = new ArrayList<>(stack.getRemainingArgs());
-                        System.out.println("Key " + parameter.getBinding().getKey() + " | " + parameter.getName() + " | " + method.getName() + " input " + originalRemaining + " | " + remaining);
                         value = locals.get(parameter.getBinding().getKey()).apply(stack);
                         int numConsumed = originalRemaining - stack.remaining();
                         unparsed = String.join(" ", remaining.subList(0, numConsumed));
@@ -477,10 +498,8 @@ public class ParametricCallable implements ICommand {
                 }
             } catch (IllegalStateException e) {
                 if (!parameter.isOptional() || parameter.getDefaultValue() != null) {
-                    System.out.println("Throw e");
                     throw e;
                 }
-                System.out.println("Dont throw e");
                 value = null;
             }
             try {
@@ -495,9 +514,10 @@ public class ParametricCallable implements ICommand {
         if (commandIndex != null) {
             Map<String, String> commandArgs = new LinkedHashMap<>();
             commandArgs.put("", getFullPath());
-            for (Map.Entry<ParameterData, Map.Entry<String, Object>> entry : argumentMap.entrySet()) {
-                if (entry.getValue().getKey() != null) {
-                    commandArgs.put(entry.getKey().getName(), entry.getValue().getKey());
+            for (ParameterData param : userParameters) {
+                Map.Entry<String, Object> inputData = argumentMap.get(param);
+                if (inputData != null) {
+                    commandArgs.put(param.getName(), inputData.getKey());
                 }
             }
             argumentMap.put(commandIndex, new AbstractMap.SimpleEntry<>(null, new JSONObject(commandArgs)));
@@ -892,6 +912,69 @@ public class ParametricCallable implements ICommand {
             paramVals[i] = value;
         }
         return paramVals;
+    }
+
+    @Override
+    public JsonObject toJson(PermissionHandler permHandler, boolean includeReturnType) {
+        JsonObject command = new JsonObject();
+        command.addProperty("help", simpleHelp());
+        command.addProperty("desc", simpleDesc());
+        if (includeReturnType) {
+            command.addProperty("return_type", StringMan.classNameToSimple(returnType.getTypeName()));
+        }
+        if (groups != null && groups.length != 0) {
+            JsonArray groupsList = new JsonArray();
+            for (String g : groups) groupsList.add(g);
+            command.add("groups", groupsList);
+        }
+        if (groupDescs != null && groupDescs.length != 0) {
+            JsonArray groupDescsList = new JsonArray();
+            for (String g : groupDescs) groupDescsList.add(g);
+            command.add("group_descs", groupDescsList);
+        }
+//        Set<String> flags = new LinkedHashSet<>();
+//        if (valueFlags != null && !valueFlags.isEmpty()) flags.addAll(valueFlags);
+//        if (provideFlags != null && !provideFlags.isEmpty()) flags.addAll(provideFlags);
+//        if (!flags.isEmpty()) {
+//            JsonArray valueFlagsList = new JsonArray();
+//            for (String g : flags) valueFlagsList.add(g);
+//            command.add("flags", valueFlagsList);
+//        }
+        JsonObject annotationsObj = new JsonObject();
+        for (Annotation annotation : annotations) {
+            if (annotation instanceof Command) continue;
+
+            if (permHandler != null && !permHandler.isPermission(annotation)) continue;
+            JsonObject annJson = new JsonObject();
+            for (Method method : annotation.annotationType().getDeclaredMethods()) {
+                try {
+                    Object value = method.invoke(annotation);
+                    Object defaultValue = method.getDefaultValue();
+                    if (value != null && !StringMan.areEqual(value, defaultValue)) {
+                        annJson.add(method.getName(), StringMan.toJson(value));
+                    }
+                } catch (IllegalAccessException | InvocationTargetException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            String key = annotation.annotationType().getSimpleName().replace("Permission", "").toLowerCase(Locale.ROOT);
+            if (annJson.isEmpty()) {
+                annotationsObj.addProperty(key, true);
+            } else {
+                annotationsObj.add(key, annJson);
+            }
+        }
+        if (!annotationsObj.entrySet().isEmpty()) {
+            command.add("annotations", annotationsObj);
+        }
+        JsonObject arguments = new JsonObject();
+        for (ParameterData param : userParameters) {
+            arguments.add(param.getName(), param.toJson());
+        }
+        if (!arguments.isEmpty()) {
+            command.add("arguments", arguments);
+        }
+        return command;
     }
 
     @Override

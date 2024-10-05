@@ -3,6 +3,7 @@ package link.locutus.discord.commands.alliance;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
@@ -24,12 +25,17 @@ import net.dv8tion.jda.api.entities.User;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 public class SetBracket extends Command {
     public SetBracket() {
         super("SetBracket", "SetTaxes", "SetTaxRate", "SetTaxBracket", CommandCategory.MEMBER, CommandCategory.ECON);
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.nation.set.taxbracket.cmd);
+    }
     @Override
     public String help() {
         return super.help() + " <nation> <tax-id/url> [internal-taxrate]";
@@ -67,7 +73,7 @@ public class SetBracket extends Command {
         DBAlliance alliance = nation.getAlliance();
         if (!db.isAllianceId(alliance.getId())) return nation.getNation() + " is not in " + alliance;
 
-        Map<Integer, TaxBracket> brackets = alliance.getTaxBrackets(false);
+        Map<Integer, TaxBracket> brackets = alliance.getTaxBrackets(TimeUnit.MINUTES.toMillis(5));
 
         if (args.size() == 1) {
             StringBuilder response = new StringBuilder();

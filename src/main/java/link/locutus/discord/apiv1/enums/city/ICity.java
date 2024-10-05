@@ -2,15 +2,18 @@ package link.locutus.discord.apiv1.enums.city;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import link.locutus.discord.apiv1.enums.Continent;
 import link.locutus.discord.apiv1.enums.city.building.Building;
 import link.locutus.discord.apiv1.enums.city.building.Buildings;
 import link.locutus.discord.apiv1.enums.city.project.Project;
 import link.locutus.discord.apiv1.enums.city.project.Projects;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
+import link.locutus.discord.util.PW;
 
 import java.util.AbstractMap;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Predicate;
 
 public interface ICity {
@@ -19,6 +22,37 @@ public interface ICity {
     int getPoweredInfra();
 
     double getInfra();
+
+    default double getFreeInfra() {
+        return getInfra() - getNumBuildings() * 50;
+    }
+
+    default double caclulateBuildingCostConverted(JavaCity from) {
+        double total = 0;
+        for (Building building : Buildings.values()) {
+            int amtA = getBuilding(building);
+            int amtB = from.getBuilding(building);
+            if (amtA != amtB) {
+                if (amtB > amtA) {
+                    total += building.getNMarketCost((amtB - amtA) * 0.5);
+                } else {
+                    total += building.getNMarketCost(amtB - amtA);
+                }
+            }
+        }
+        return total;
+    }
+
+    default double calculateCostConverted(JavaCity from) {
+        double total = caclulateBuildingCostConverted(from);
+        if (this.getInfra() > from.getInfra()) {
+            total += PW.City.Infra.calculateInfra(from.getInfra(), getInfra());
+        }
+        if (!Objects.equals(getLand(), from.getLand())) {
+            total += PW.City.Land.calculateLand(from.getLand(), getLand());
+        }
+        return total;
+    }
 
     double getLand();
 
@@ -96,5 +130,26 @@ public interface ICity {
             "Each digit is the number of buildings (barracks, factory, hangar, drydock)")
     default String getMMR() {
         return getBuilding(Buildings.BARRACKS) + "" + getBuilding(Buildings.FACTORY) + "" + getBuilding(Buildings.HANGAR) + "" + getBuilding(Buildings.DRYDOCK);
+    }
+
+    default boolean canBuild(Continent continent, Predicate<Project> hasProject, boolean throwError) {
+        // check the building can exist in the continent and that the cap for that building is sufficient
+        for (Building building : Buildings.values()) {
+            int amt = getBuilding(building);
+            if (amt <= 0) continue;
+            if (!building.canBuild(continent)) {
+                if (throwError) {
+                    throw new IllegalArgumentException("Building " + building.name() + " cannot be built in " + continent);
+                }
+                return false;
+            }
+            if (amt > building.getCap(hasProject)) {
+                if (throwError) {
+                    throw new IllegalArgumentException("Building " + building.name() + " has a cap of " + building.getCap(hasProject));
+                }
+                return false;
+            }
+        }
+        return true;
     }
 }

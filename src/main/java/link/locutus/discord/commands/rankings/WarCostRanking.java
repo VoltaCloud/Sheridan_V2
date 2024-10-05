@@ -9,8 +9,10 @@ import link.locutus.discord.apiv1.enums.Rank;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
-import link.locutus.discord.commands.rankings.builder.*;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.commands.manager.v2.builder.*;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.entities.DBWar;
@@ -41,6 +43,11 @@ import java.util.stream.Collectors;
 public class WarCostRanking extends Command {
     public WarCostRanking() {
         super(CommandCategory.GAME_INFO_AND_TOOLS, CommandCategory.MILCOM);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.stats_war.warCostRanking.cmd);
     }
 
     public static TriFunction<Integer, DBWar, Double, Double> getScaleFunction(boolean perCity, Map<Integer, Integer> warsByGroup, boolean groupByAA) {
@@ -181,7 +188,6 @@ public class WarCostRanking extends Command {
         if (args.size() != 2 && args.size() > 3) return usage(args.size(), 1, 2, channel);
 
         Set<DBNation> nations = DiscordUtil.parseNations(guild, author, me, args.get(0), false, true);
-        System.out.println("Nations " + nations.size());
         Map<Integer, DBNation> nationMap = nations.stream().collect(Collectors.toMap(DBNation::getNation_id, e -> e));
         boolean isAA = flags.contains('a'); // args.get(0).equalsIgnoreCase("*") ||
 

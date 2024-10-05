@@ -3,11 +3,13 @@ package link.locutus.discord.commands.war;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
-import link.locutus.discord.commands.rankings.builder.RankBuilder;
-import link.locutus.discord.commands.rankings.builder.SummedMapRankBuilder;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
+import link.locutus.discord.commands.manager.v2.builder.RankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.SummedMapRankBuilder;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.Activity;
@@ -55,6 +57,11 @@ public class RaidCommand extends Command {
     }
 
     @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.war.find.raid.cmd);
+    }
+
+    @Override
     public String help() {
         return "!raid [alliance|coalition|*] [options...]";
     }
@@ -63,7 +70,7 @@ public class RaidCommand extends Command {
     public boolean checkPermission(Guild server, User user) {
         DBNation nation = DiscordUtil.getNation(user);
         if (nation == null) return false;
-        return Roles.MEMBER.has(user, server);
+        return Roles.APPLICANT.has(user, server) || Roles.MEMBER.has(user, server);
     }
 
     @Override
@@ -95,8 +102,6 @@ public class RaidCommand extends Command {
     public String onCommand(List<String> args, Set<Character> flags, DBNation me, Guild guild, User user, IMessageIO channel) throws ExecutionException, InterruptedException {
         GuildDB db = Locutus.imp().getGuildDB(guild);
         Set<Integer> enemyAAs = db.getCoalition("enemies");
-
-        long start = System.currentTimeMillis();
 
         int results = 5;
 
@@ -208,8 +213,6 @@ public class RaidCommand extends Command {
 
         if (beigeTurns > 0) vm = Math.max(vm, beigeTurns);
 
-        System.out.println(((-start) + (start = System.currentTimeMillis())) + "ms (1)");
-
         Set<DBNation> allNations = new LinkedHashSet<>(Locutus.imp().getNationDB().getNations().values());
         Set<DBNation> nations;
 
@@ -241,7 +244,6 @@ public class RaidCommand extends Command {
                 }
         }
 
-        System.out.println(((-start) + (start = System.currentTimeMillis())) + "ms (3)");
         nations.removeIf(f -> f.hasUnsetMil());
         if (nations.isEmpty()) {
             return "Invalid AA or Coalition (case sensitive): " + aa + ". @see also: `!coalitions`";
@@ -376,7 +378,6 @@ public class RaidCommand extends Command {
             double bankLootEst = 0;
 
             if (!ignoreBank) {
-                long start4 = System.nanoTime();
                 DBAlliance alliance = enemy.getAlliance();
                 if (alliance != null && enemy.getPositionEnum() != Rank.APPLICANT) {
                     LootEntry aaLoot = alliance.getLoot();
@@ -392,7 +393,6 @@ public class RaidCommand extends Command {
                         value += bankLootEst;
                     }
                 }
-                diffBankLootEst += System.nanoTime() - start4;
             }
 
             List<DBBounty> natBounties = allBounties.get(enemy.getNation_id());
@@ -427,7 +427,6 @@ public class RaidCommand extends Command {
                 for (Map.Entry<WarType, Double> entry : total.entrySet()) {
                     value = Math.max(value, entry.getValue());
                 }
-                System.out.println("Value2 " + MathMan.format(value));
             }
 
             double originalValue = value;
@@ -440,10 +439,10 @@ public class RaidCommand extends Command {
             double counterChance = -1;
             long myMilValue = me.militaryValue(false);
 
-            long start5 = System.nanoTime();
             if (enemy.active_m() < 10000 && enemy.getAlliance_id() != 0 && !enemyAAs.contains(enemy.getAlliance_id())) {
                 int turns = 2 * 12;
-                Activity activity = new Activity(enemy.getNation_id(), 70 * 12);
+                long startTurn = TimeUtil.getTurn() - 70 * 12;
+                Activity activity = new Activity(enemy.getNation_id(), startTurn, Long.MAX_VALUE);
                 activeChance = activity.loginChance(turns, true);
                 if (me.getShips() <= enemy.getShips()) {
                     value -= Math.max(0, value - bankLootEst) * 0.75 * activeChance;
@@ -491,10 +490,6 @@ public class RaidCommand extends Command {
                     winChance *= 0.8;
                 }
             }
-            diffWars += System.nanoTime() - start5;
-
-            long start6 = System.nanoTime();
-            diffCounter += System.nanoTime() - start6;
 
             if (counterChance != -1) {
                 costIncurred += Math.min(myMilValue, 1000000 * enemy.getCities()) * counterChance;
@@ -513,13 +508,6 @@ public class RaidCommand extends Command {
 
             nationNetValues.add(new AbstractMap.SimpleEntry<>(enemy, new AbstractMap.SimpleEntry<>(value, originalValue)));
         }
-
-        System.out.println("Diffloop:" +
-                "\n- diffRevenue " + (diffRevenue / TimeUnit.MILLISECONDS.toNanos(1)) +
-                "\n- diffBankLootEst " + (diffBankLootEst / TimeUnit.MILLISECONDS.toNanos(1)) +
-                "\n- diffWars " + (diffWars / TimeUnit.MILLISECONDS.toNanos(1)) +
-                "\n- diffCounter " + (diffCounter / TimeUnit.MILLISECONDS.toNanos(1))
-        );
 
         nationNetValues.sort((o1, o2) -> Double.compare(o2.getValue().getKey(), o1.getValue().getKey()));
 
@@ -552,7 +540,9 @@ public class RaidCommand extends Command {
         });
 
         if (count == 0) {
-            channel.sendMessage("No results. Try using `!raid * 15` or `!raid * 15 -beige` (and plan raids out). Ping milcom for (assistance");
+            channel.sendMessage("No results. Try using " + CM.war.find.raid.cmd.targets("*").numResults("15") + " or " +
+                    CM.war.find.raid.cmd.targets("*").numResults("15").beigeTurns("10")
+                    +" (and plan raids out). Ping milcom for (assistance");
             return null;
         }
 

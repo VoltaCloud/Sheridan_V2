@@ -6,6 +6,7 @@ import link.locutus.discord.apiv1.enums.AttackType;
 import link.locutus.discord.apiv1.enums.MilitaryUnit;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.db.entities.DBNation;
@@ -22,6 +23,10 @@ public class UnitHistory extends Command {
         super("UnitHistory", "MilitaryHistory", "Rebuy", CommandCategory.MILCOM, CommandCategory.GAME_INFO_AND_TOOLS);
     }
 
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.unit.history.cmd);
+    }
     @Override
     public String help() {
         return super.help() + " <nation> <unit>";
@@ -111,7 +116,7 @@ public class UnitHistory extends Command {
             }
         }
 
-        CM.unit.history cmd = CM.unit.history.cmd.create(nation.getNation_id() + "", unit.name(), null);
+        CM.unit.history cmd = CM.unit.history.cmd.nation(nation.getNation_id() + "").unit(unit.name());
 
         String title = "`" + nation.getNation() + "` " + unit.name() + " history";
         int perPage = 15;

@@ -1,14 +1,16 @@
 package link.locutus.discord.commands.trade;
 
 import link.locutus.discord.Locutus;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
+import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.db.entities.DBCity;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.PWBindings;
-import link.locutus.discord.commands.rankings.builder.NumericGroupRankBuilder;
-import link.locutus.discord.commands.rankings.builder.RankBuilder;
-import link.locutus.discord.commands.rankings.builder.SummedMapRankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.NumericGroupRankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.RankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.SummedMapRankBuilder;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.util.discord.DiscordUtil;
@@ -31,6 +33,13 @@ public class FindProducer extends Command {
     public FindProducer() {
         super("FindProducer", "FindProducers", CommandCategory.ECON, CommandCategory.GAME_INFO_AND_TOOLS);
     }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.trade.findProducer.cmd);
+    }
+
+
     @Override
     public String help() {
         return super.help() + " <resource> [nations]";
@@ -65,7 +74,7 @@ public class FindProducer extends Command {
         boolean newNationBonus = !flags.contains('b');
         boolean includeNegative = flags.contains('n');
 
-        List<ResourceType> types = args.get(0).equals("*") ? ResourceType.valuesList : PWBindings.rssTypes(args.get(0));
+        Set<ResourceType> types = args.get(0).equals("*") ? new HashSet<>(ResourceType.valuesList) : PWBindings.rssTypes(args.get(0));
         if (types.isEmpty()) return "Please provide more than one resource type: `" + args.get(0) + "`";
 
         List<DBNation> nations;
@@ -103,10 +112,10 @@ public class FindProducer extends Command {
             Map<Integer, JavaCity> cities = Locutus.imp().getNationDB().toJavaCity(v3Cities);
 
             Arrays.fill(profitBuffer, 0);
-            double[] profit = nation.getRevenue();
+            double[] profit = nation.getRevenue(12, true, militaryUpkeep, tradeBonus, newNationBonus, false, false, nation.getTreasureBonusPct(), false);
             double value;
             if (types.size() == 1) {
-                value = profit[types.get(0).ordinal()];
+                value = profit[types.iterator().next().ordinal()];
             } else {
                 value = 0;
                 for (ResourceType type : types) {

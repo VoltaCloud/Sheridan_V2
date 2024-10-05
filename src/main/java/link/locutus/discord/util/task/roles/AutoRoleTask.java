@@ -3,7 +3,7 @@ package link.locutus.discord.util.task.roles;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
-import link.locutus.discord.commands.rankings.builder.RankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.RankBuilder;
 import link.locutus.discord.db.DiscordDB;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.Coalition;
@@ -488,7 +488,7 @@ public class AutoRoleTask implements IAutoRoleTask {
         }
         if (nation != null) {
             if (registeredRole == null) {
-                info.logError(member, "No registered role exists. Please create one on discord, then use " + CM.role.setAlias.cmd.create(Roles.REGISTERED.name(), null, null, null) + "");
+                info.logError(member, "No registered role exists. Please create one on discord, then use " + CM.role.setAlias.cmd.locutusRole(Roles.REGISTERED.name()).discordRole(null) + "");
             } else {
                 info.logError(member, "Not registered. See: " + CM.register.cmd.toSlashMention());
             }

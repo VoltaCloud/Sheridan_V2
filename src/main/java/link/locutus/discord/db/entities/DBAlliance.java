@@ -14,11 +14,12 @@ import link.locutus.discord.apiv3.PoliticsAndWarV3;
 import link.locutus.discord.apiv3.enums.AlliancePermission;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Default;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
 import link.locutus.discord.commands.manager.v2.impl.pw.binding.NationAttributeDouble;
-import link.locutus.discord.commands.rankings.builder.RankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.RankBuilder;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.BankDB;
 import link.locutus.discord.db.GuildDB;
@@ -96,13 +97,8 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
 
     @Command(desc = "Number of treasures in the alliance")
     public int getNumTreasures() {
-        int num = 0;
-        for (DBNation nation : getNations()) {
-            if (nation.getVm_turns() == 0) {
-                num += nation.getTreasures().size();
-            }
-        }
-        return num;
+        if (allianceId == 0) return 0;
+        return Locutus.imp().getNationDB().countTreasures(allianceId);
     }
 
     @Command(desc = "Treasure bonus (decimal percent between 0-1)")
@@ -147,7 +143,7 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
         return lootEntry;
     }
 
-    public void setAAPage(String file) throws Exception{
+    public String setAAPage(String file) throws Exception{
         String input = FileUtil.readFile(file);
 
         input = input.replaceAll("\n", "");
@@ -158,14 +154,12 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
         String finalInput = input;
 
         Auth auth = getAuth();
-        System.out.println(auth.getNation() + " | " + auth.getAllianceId());
-        String response = new EditAllianceTask(auth.getNation(), new Consumer<Map<String, String>>() {
+        return new EditAllianceTask(auth.getNation(), new Consumer<Map<String, String>>() {
             @Override
             public void accept(Map<String, String> stringStringMap) {
                 stringStringMap.put("desc", finalInput);
             }
         }).call();
-        System.out.println(response + " | response");
     }
 
     public static DBAlliance parse(String arg, boolean throwError) {
@@ -379,10 +373,11 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
     }
 
     private Map<Integer, TaxBracket> BRACKETS_CACHED;
-    private long BRACKETS_TURN_UPDATED;
+    private long BRACKETS_TIME_UPDATED;
 
-    public synchronized Map<Integer, TaxBracket> getTaxBrackets(boolean useCache) {
-        if (useCache && BRACKETS_TURN_UPDATED == TimeUtil.getTurn()) {
+    public synchronized Map<Integer, TaxBracket> getTaxBrackets(long cacheFor) {
+        long now = System.currentTimeMillis();
+        if (cacheFor > 0 && (now - BRACKETS_TIME_UPDATED < cacheFor)) {
             boolean isOutdated = false;
             for (int id : listUsedTaxIds()) {
                 if (!BRACKETS_CACHED.containsKey(id)) {
@@ -406,7 +401,7 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
 
         Map<Integer, com.politicsandwar.graphql.model.TaxBracket> bracketsV3 = api.fetchTaxBrackets(allianceId, true);
         BRACKETS_CACHED = new ConcurrentHashMap<>();
-        BRACKETS_TURN_UPDATED = TimeUtil.getTurn();
+        BRACKETS_TIME_UPDATED = now;
         for (Map.Entry<Integer, com.politicsandwar.graphql.model.TaxBracket> entry : bracketsV3.entrySet()) {
             TaxBracket bracket = new TaxBracket(entry.getValue());
             Locutus.imp().getBankDB().addTaxBracket(bracket);
@@ -586,19 +581,19 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
     }
 
     @Command(desc = "Sum of nation attribute for specific nations in alliance")
-    public double getTotal(NationAttributeDouble attribute, @Default NationFilter filter) {
+    public double getTotal(@NoFormat NationAttributeDouble attribute, @NoFormat @Default NationFilter filter) {
         Set<DBNation> nations = filter == null ? getNations() : getNations(filter.toCached(Long.MAX_VALUE));
         return nations.stream().mapToDouble(attribute::apply).sum();
     }
 
     @Command(desc = "Average of nation attribute for specific nations in alliance")
-    public double getAverage(NationAttributeDouble attribute, @Default NationFilter filter) {
+    public double getAverage(@NoFormat NationAttributeDouble attribute, @NoFormat @Default NationFilter filter) {
         Set<DBNation> nations = filter == null ? getNations() : getNations(filter.toCached(Long.MAX_VALUE));
         return nations.stream().mapToDouble(attribute::apply).average().orElse(0);
     }
 
     @Command(desc = "Returns the average value of the given attribute per another attribute (such as cities)")
-    public double getAveragePer(NationAttributeDouble attribute, NationAttributeDouble per, @Default NationFilter filter) {
+    public double getAveragePer(@NoFormat NationAttributeDouble attribute, @NoFormat NationAttributeDouble per, @Default NationFilter filter) {
         double total = 0;
         double perTotal = 0;
         for (DBNation nation : getNations(filter.toCached(Long.MAX_VALUE))) {
@@ -610,13 +605,13 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
 
 
     @Command(desc = "Count of nations in alliance matching a filter")
-    public int countNations(@Default NationFilter filter) {
+    public int countNations(@NoFormat @Default NationFilter filter) {
         if (filter == null) return getNations().size();
         return getNations(filter.toCached(Long.MAX_VALUE)).size();
     }
 
     @Command(desc = "Is allied with another alliance")
-    public boolean hasDefensiveTreaty(Set<DBAlliance> alliances) {
+    public boolean hasDefensiveTreaty(@NoFormat Set<DBAlliance> alliances) {
         for (DBAlliance alliance : alliances) {
             Treaty treaty = getDefenseTreaties().get(alliance.getId());
             if (treaty != null) return true;
@@ -644,6 +639,11 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
     public int getTreatyOrdinal(DBAlliance alliance) {
         Treaty treaty = getTreaties().get(alliance.getId());
         return treaty == null ? 0 : treaty.getType().getStrength();
+    }
+
+    @Command(desc = "Market value of alliance revenue of taxable member nations")
+    public double getRevenueConverted() {
+        return ResourceType.convertedTotal(getRevenue());
     }
 
     @Command(desc = "Revenue of taxable alliance members")
@@ -815,9 +815,9 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
             PoliticsAndWarV3 api = getApi(AlliancePermission.MANAGE_TREATIES);
             if (api != null) {
                 List<com.politicsandwar.graphql.model.Treaty> treaties = api.fetchTreaties(allianceId);
-                Locutus.imp().getNationDB().updateTreaties(treaties, Event::post, f -> {
-                    return f.getFromId() == allianceId || f.getToId() == allianceId;
-                });
+                Locutus.imp().runEventsAsync(events ->
+                    Locutus.imp().getNationDB().
+                        updateTreaties(treaties, events, f -> f.getFromId() == allianceId || f.getToId() == allianceId));
                 Map<Integer, Treaty> result = new HashMap<>();
                 for (com.politicsandwar.graphql.model.Treaty v3 : treaties) {
                     Treaty treaty = new Treaty(v3);
@@ -869,7 +869,7 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
     }
 
     @Command
-    public double getScore(@Default NationFilter filter) {
+    public double getScore(@NoFormat @Default NationFilter filter) {
         if (filter != null) {
             return new SimpleNationList(getNations(filter.toCached(Long.MAX_VALUE))).getScore();
         }
@@ -886,7 +886,7 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
     }
 
     @Command(desc = "Rank by score")
-    public int getRank(@Default NationFilter filter) {
+    public int getRank(@NoFormat @Default NationFilter filter) {
         if (filter != null) {
             Map<Integer, List<DBNation>> byScore = Locutus.imp().getNationDB().getNationsByAlliance(filter.toCached(Long.MAX_VALUE), true);
             int rankTmp = 0;
@@ -1226,7 +1226,7 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
     public void updateCities(Predicate<DBNation> fetchNation) throws IOException {
         Set<Integer> nationIds = getNations(false, 0, true).stream().filter(fetchNation).map(DBNation::getId).collect(Collectors.toSet());
         if (nationIds.isEmpty()) return;
-        Locutus.imp().getNationDB().updateCitiesOfNations(nationIds, true, true, Event::post);
+        Locutus.imp().runEventsAsync(events -> Locutus.imp().getNationDB().updateCitiesOfNations(nationIds, true, true, events));
     }
 
     public DBAlliance getCachedParentOfThisOffshore() {
@@ -1565,6 +1565,7 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
             }
             if (nation.getVm_turns() > 0) {
                 toSend.put(nation, Map.entry(OffshoreInstance.TransferStatus.VACATION_MODE, ResourceType.getBuffer()));
+                continue;
             }
             if (nation.isGray() && !ignoreInactives && !bypassChecks) {
                 toSend.put(nation, Map.entry(OffshoreInstance.TransferStatus.GRAY, ResourceType.getBuffer()));
@@ -1572,9 +1573,11 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
             }
             if (nation.active_m() > TimeUnit.DAYS.toMinutes(4) && !ignoreInactives && !bypassChecks) {
                 toSend.put(nation, Map.entry(OffshoreInstance.TransferStatus.INACTIVE, ResourceType.getBuffer()));
+                continue;
             }
             if (nation.isBeige() && !allowBeige && !bypassChecks) {
                 toSend.put(nation, Map.entry(OffshoreInstance.TransferStatus.BEIGE, ResourceType.getBuffer()));
+                continue;
             }
             if (value.getKey() != OffshoreInstance.TransferStatus.SUCCESS) {
                 toSend.put(nation, value);
@@ -1636,34 +1639,28 @@ public class DBAlliance implements NationList, NationOrAlliance, GuildOrAlliance
         Map<DBNation, Integer> ops = new HashMap<>();
         // get api
         PoliticsAndWarV3 api = getApiOrThrow(true, AlliancePermission.SEE_SPIES);
-        for (Nation nation : api.fetchNations(true, new Consumer<NationsQueryRequest>() {
-            @Override
-            public void accept(NationsQueryRequest request) {
+        Locutus.imp().runEventsAsync(events -> {
+            for (Nation nation : api.fetchNations(true, request -> {
                 request.setAlliance_id(List.of(allianceId));
                 request.setVmode(false);
-            }
-        }, new Consumer<NationResponseProjection>() {
-            @Override
-            public void accept(NationResponseProjection proj) {
+            }, proj -> {
                 proj.id();
                 proj.spies();
                 proj.spy_attacks();
                 proj.espionage_available();
+            })) {
+                DBNation dbNation = DBNation.getById(nation.getId());
+                if (dbNation == null) continue;
+                dbNation.setSpies(nation.getSpies(), events);
+                if (nation.getEspionage_available() != (dbNation.isEspionageAvailable())) {
+                    dbNation.setEspionageFull(!nation.getEspionage_available());
+                }
+                if (nation.getSpy_attacks() != null) {
+                    nation.setSpy_attacks(nation.getSpy_attacks());
+                    ops.put(dbNation, nation.getSpy_attacks());
+                }
             }
-        })) {
-            DBNation dbNation = DBNation.getById(nation.getId());
-            if (dbNation == null) continue;
-            DBNation copy = new DBNation(dbNation);
-
-            dbNation.setSpies(nation.getSpies(), false);
-            if (nation.getEspionage_available() != (dbNation.isEspionageAvailable())) {
-                dbNation.setEspionageFull(!nation.getEspionage_available());
-            }
-            if (nation.getSpy_attacks() != null) {
-                nation.setSpy_attacks(nation.getSpy_attacks());
-                ops.put(dbNation, nation.getSpy_attacks());
-            }
-        }
+        });
         return ops;
     }
 

@@ -1,6 +1,8 @@
 package link.locutus.discord.commands.manager.v2.impl.pw.commands;
 
+import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.enums.DepositType;
+import link.locutus.discord.apiv1.enums.city.project.Projects;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Arg;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
@@ -9,7 +11,7 @@ import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
 import link.locutus.discord.commands.manager.v2.binding.annotation.TextArea;
-import link.locutus.discord.commands.manager.v2.binding.bindings.Operation;
+import link.locutus.discord.commands.manager.v2.binding.bindings.MathOperation;
 import link.locutus.discord.commands.manager.v2.command.CommandBehavior;
 import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.ICommand;
@@ -38,6 +40,7 @@ import link.locutus.discord.util.PW;
 import link.locutus.discord.util.RateLimitUtil;
 import link.locutus.discord.util.SpyCount;
 import link.locutus.discord.util.StringMan;
+import link.locutus.discord.util.discord.DiscordUtil;
 import link.locutus.discord.util.sheet.GoogleDoc;
 import link.locutus.discord.util.sheet.SpreadSheet;
 import net.dv8tion.jda.api.EmbedBuilder;
@@ -50,7 +53,6 @@ import net.dv8tion.jda.api.interactions.components.ActionRow;
 import net.dv8tion.jda.api.interactions.components.ItemComponent;
 import net.dv8tion.jda.api.interactions.components.buttons.Button;
 import org.json.JSONObject;
-import retrofit2.http.HEAD;
 
 import java.io.IOException;
 import java.security.GeneralSecurityException;
@@ -83,10 +85,9 @@ public class EmbedCommands {
         }
     }
 
-
     @Command(desc = "Set the title of an embed from this bot")
     @RolePermission(Roles.INTERNAL_AFFAIRS)
-    public String title(@Me User user, @Me Guild guild, Message discMessage, String title) {
+    public String title(@Me User user, @Me IMessageIO io, @Me Guild guild, Message discMessage, String title) {
         checkMessagePerms(user, guild, discMessage);
         DiscordMessageBuilder message = new DiscordMessageBuilder(discMessage.getChannel(), discMessage);
         List<MessageEmbed> embeds = message.getEmbeds();
@@ -99,12 +100,14 @@ public class EmbedCommands {
         message.clearEmbeds();
         message.embed(builder.build());
         message.send();
-        return "Done! See: " + discMessage.getJumpUrl();
+        io.create().embed("Set Title", "Done! See: " + discMessage.getJumpUrl()).cancelButton("Dismiss").send();
+        return null;
     }
 
-    @Command(desc = "Set the description of an embed from this bot")
+    @Command(desc = "Set the description of an embed from this bot\n" +
+            "Use backslash n for newline and `{description}` to include the existing description")
     @RolePermission(Roles.INTERNAL_AFFAIRS)
-    public String description(@Me User user, @Me Guild guild, Message discMessage, String description) {
+    public String description(@Me User user, @Me IMessageIO io, @Me Guild guild, Message discMessage, String description) {
         checkMessagePerms(user, guild, discMessage);
         DiscordMessageBuilder message = new DiscordMessageBuilder(discMessage.getChannel(), discMessage);
         List<MessageEmbed> embeds = message.getEmbeds();
@@ -112,23 +115,75 @@ public class EmbedCommands {
         MessageEmbed embed = embeds.get(0);
 
         EmbedBuilder builder = new EmbedBuilder(embed);
-        builder.setDescription(description.replace("\\n", "\n"));
+        description = description.replace("\\n", "\n");
+        String existing = embed.getDescription();
+        if (existing != null && description.contains("{description}")) {
+            description = description.replace("{description}", existing);
+        }
+        builder.setDescription(description);
 
         message.clearEmbeds();
         message.embed(builder.build());
         message.send();
-        return "Done! See: " + discMessage.getJumpUrl();
+        io.create().embed("Set Description", "Done! See: " + discMessage.getJumpUrl()).cancelButton("Dismiss").send();
+        return null;
     }
 
     @Command(desc = "Remove a button from an embed from this bot")
     @RolePermission(Roles.INTERNAL_AFFAIRS)
-    public String removeButton(@Me User user, @Me Guild guild, Message message, @Arg("A comma separated list of button labels") @TextArea(',') List<String> labels) {
+    public String renameButton(@Me User user, @Me IMessageIO io, @Me Guild guild, Message message, String label, String rename_to) {
+        checkMessagePerms(user, guild, message);
+        if (message.getAuthor().getIdLong() != Settings.INSTANCE.APPLICATION_ID) {
+            throw new IllegalArgumentException("The message you linked is not from the bot. Only bot messages can be modified.");
+        }
+        if (!rename_to.matches("[a-zA-Z0-9_ ]+")) {
+            throw new IllegalArgumentException("Label must be alphanumeric, not: `" + rename_to + "`");
+        }
+
+        Button found = null;
+        List<Button> buttons = message.getButtons();
+        for (Button button : buttons) {
+            if (button.getLabel().equalsIgnoreCase(label)) {
+                found = button;
+                break;
+            }
+        }
+        if (found == null) {
+            throw new IllegalArgumentException("Button `" + label + "` not found on the embed");
+        }
+        List<MessageEmbed> embeds = message.getEmbeds();
+        if (embeds.size() != 1) {
+            throw new IllegalArgumentException("No embeds found on message: `" + message.getId() + "`");
+        }
+        Map<String, String> reactions = DiscordUtil.getReactions(embeds.get(0));
+
+        DiscordMessageBuilder msg = new DiscordMessageBuilder(message.getChannel(), message);
+        msg.clearButtons();
+
+        if (reactions != null) {
+            for (Map.Entry<String, String> entry : reactions.entrySet()) {
+                msg.commandButton(entry.getValue(), entry.getKey().equalsIgnoreCase(label) ? rename_to : entry.getKey());
+            }
+        }
+        for (Button button : message.getButtons()) {
+            if (!button.getId().equalsIgnoreCase(button.getLabel())) {
+                msg.commandButton(button.getId(), button.getLabel().equalsIgnoreCase(label) ? rename_to : button.getLabel());
+            }
+        }
+        msg.send();
+        io.create().embed("Renamed Button", "Done! Renamed button `" + label + "` to " + rename_to + "\n" +
+                "Remove it using: " + CM.embed.remove.button.cmd.toSlashMention()).cancelButton("Dismiss").send();
+        return null;
+    }
+
+    @Command(desc = "Remove a button from an embed from this bot")
+    @RolePermission(Roles.INTERNAL_AFFAIRS)
+    public String removeButton(@Me User user, @Me IMessageIO io, @Me Guild guild, Message message, @Arg("A comma separated list of button labels") @TextArea(',') List<String> labels) {
         checkMessagePerms(user, guild, message);
         if (message.getAuthor().getIdLong() != Settings.INSTANCE.APPLICATION_ID) {
             throw new IllegalArgumentException("The message you linked is not from the bot. Only bot messages can be modified.");
         }
         Set<String> labelSet = Set.copyOf(labels);
-        List<Button> buttons = message.getButtons();
 
         Set<String> invalidLabels = new HashSet<>(labels);
         Set<String> validLabels = new LinkedHashSet<>();
@@ -153,7 +208,8 @@ public class EmbedCommands {
         }
 
         RateLimitUtil.queue(message.editMessageComponents(rows));
-        return "Done! Deleted " + labels.size() + " buttons";
+        io.create().embed("Deleted Button", "Done! Deleted " + labels.size() + " buttons").cancelButton("Dismiss").send();
+        return null;
     }
 
     @Command(desc = "Add a button to a discord embed from this bot which runs a command\n" +
@@ -191,8 +247,10 @@ public class EmbedCommands {
                 .removeButtonByLabel(label)
                 .commandButton(behavior, channelId, command.replace("\\n", "\n"), label)
                 .send();
-        return "Done! Added button `" + label + "` to " + message.getJumpUrl() + "\n" +
-                "Remove it using: " + CM.embed.remove.button.cmd.toSlashMention();
+        io.create().embed("Added Button", "Added button `" + label + "` to " + message.getJumpUrl() + "\n" +
+                "Remove it using: " + CM.embed.remove.button.cmd.toSlashMention() + "\n" +
+                "Rename using " + CM.embed.rename.button.cmd.toSlashMention()).cancelButton("Dismiss").send();// + CM.embed.rename.button.cmd.toSlashMention();
+        return null;
     }
 
     @Command(desc = "Add a button to a discord embed from this bot which runs a command")
@@ -213,7 +271,7 @@ public class EmbedCommands {
             String name = param.getName();
             if (!parsed.containsKey(name) && !parsed.containsKey(name.toLowerCase(Locale.ROOT))) {
                 throw new IllegalArgumentException("The command `" + command.getFullPath() + "` has a required argument `" + name + "` that is missing from your `arguments` value: `" + arguments + "`.\n" +
-                        "See: " + CM.help.command.cmd.create(command.getFullPath()));
+                        "See: " + CM.help.command.cmd.command(command.getFullPath()));
             }
         }
 
@@ -224,7 +282,7 @@ public class EmbedCommands {
     @Command(desc = "Add a modal button to a discord embed from this bot, which creates a prompt for a command")
     @NoFormat
     @RolePermission(Roles.INTERNAL_AFFAIRS)
-    public String addModal(@Me User user, @Me Guild guild, Message message, String label, CommandBehavior behavior, ICommand command,
+    public String addModal(@Me User user, @Me IMessageIO io, @Me Guild guild, Message message, String label, CommandBehavior behavior, ICommand command,
                            @Arg("A comma separated list of the command arguments to prompt for\n" +
                                    "Arguments can be one of the named arguments for the command, or the name of any `{placeholder}` you have for `defaults`") String arguments,
                            @Arg("The default arguments and values you want to submit to the command\n" +
@@ -270,7 +328,7 @@ public class EmbedCommands {
             String nameL = name.toLowerCase(Locale.ROOT);
             if (!promptedArguments.contains(name) && !promptedArguments.contains(nameL) && !providedArguments.containsKey(name) && !providedArguments.containsKey(nameL)) {
                 throw new IllegalArgumentException("The command `" + command.getFullPath() + "` has a required argument `" + name + "` that is missing from your `arguments` or `defaults`.\n" +
-                        "See: " + CM.help.command.cmd.create(command.getFullPath()));
+                        "See: " + CM.help.command.cmd.command(command.getFullPath()));
             }
         }
 
@@ -283,7 +341,8 @@ public class EmbedCommands {
         new DiscordMessageBuilder(message.getChannel(), message)
                 .modal(behavior, channelId, command, full, label)
                 .send();
-        return "Done! Added modal button `" + label + "` to " + message.getJumpUrl();
+        io.create().embed("Added Modal", "Added modal button `" + label + "` to " + message.getJumpUrl()).cancelButton("Dismiss").send();
+        return null;
     }
 
 
@@ -363,7 +422,7 @@ Results are sorted best to last in <#995168236213633024>" "<#995168236213633024>
      */
     @Command(desc="Makes a raid panel, which is a discord embed with buttons for different options for finding raid targets")
     @RolePermission(Roles.ADMIN)
-    public void raid(@Me User user, @Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel) {
+    public void raid(@Me IMessageIO io, @Default MessageChannel outputChannel) {
         Long channelId = outputChannel == null ? null : outputChannel.getIdLong();
         String title = "Find Raid Targets";
         String body = """
@@ -380,20 +439,19 @@ Results are sorted best to last in <#995168236213633024>" "<#995168236213633024>
             body += "\n\n> Results in <#" + channelId + ">";
         }
 
-        CM.war.find.raid app = CM.war.find.raid.cmd.create(
-                null, "10", null, null, null, null, null, null, null, null, null);
-        CM.war.find.raid members = CM.war.find.raid.cmd.create(
-                "*", "25", null, null, null, null, null, null, null, null, null);
-        CM.war.find.raid beige = CM.war.find.raid.cmd.create(
-                "*", "25", null, null, "24", null, null, null, null, null, null);
-        CM.war.find.raid ground = CM.war.find.raid.cmd.create(
-                "#tankpct<0.2,#soldierpct<0.4,*", "25", "0d", "true", null, null, null, null, null, null, null);
-        CM.war.find.raid ground_2d = CM.war.find.raid.cmd.create(
-                "#tankpct<0.2,#soldierpct<0.4,*", "25", "2d",  "true", null,null, null, null, null, null, null);
-        CM.war.find.raid losing = CM.war.find.raid.cmd.create(
-                "#def>0,#RelativeStrength<1,*", "25", "0d", "true", null, null, null, null, null, null, null);
-        CM.war.find.unprotected unprotected = CM.war.find.unprotected.cmd.create(
-                "*", "25", null, "true", null,  null, "90", null, null, null);
+        CM.war.find.raid app = CM.war.find.raid.cmd.numResults("10");
+        CM.war.find.raid members = CM.war.find.raid.cmd.targets(
+                "*").numResults("25");
+        CM.war.find.raid beige = CM.war.find.raid.cmd.targets(
+                "*").numResults("25").beigeTurns("24");
+        CM.war.find.raid ground = CM.war.find.raid.cmd.targets(
+                "#tankpct<0.2,#soldierpct<0.4,*").numResults("25").activeTimeCutoff("0d").weakground("true");
+        CM.war.find.raid ground_2d = CM.war.find.raid.cmd.targets(
+                "#tankpct<0.2,#soldierpct<0.4,*").numResults("25").activeTimeCutoff("2d").weakground("true");
+        CM.war.find.raid losing = CM.war.find.raid.cmd.targets(
+                "#def>0,#RelativeStrength<1,*").numResults("25").activeTimeCutoff("0d").weakground("true");
+        CM.war.find.unprotected unprotected = CM.war.find.unprotected.cmd.targets(
+                "*").numResults("25").includeAllies("true").ignoreODP("true").maxRelativeCounterStrength("90");
 
         CommandBehavior behavior = CommandBehavior.UNPRESS;
         io.create().embed(title, body)
@@ -427,7 +485,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
      */
         @Command(desc="Blockader Target & Requests discord embed template")
         @RolePermission(Roles.ADMIN)
-        public void unblockadeRequests(@Me User user, @Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel) {
+        public void unblockadeRequests(@Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel, @Default CommandBehavior behavior) {
+            if (behavior == null) behavior = CommandBehavior.UNPRESS;
             if (db.getCoalition(Coalition.ALLIES).isEmpty()) {
                 throw new IllegalArgumentException("No `" + Coalition.ALLIES.name() + "` coalition. See " + CM.coalition.create.cmd.toSlashMention());
             }
@@ -441,7 +500,7 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             String title = "Blockade Target & Requests";
             String body = """
                     **Request your blockade broken**
-                    See e.g.: """ + CM.war.blockade.request.cmd.create("3d", "some reason", null).toSlashCommand(true)+ """
+                    See e.g.: """ + CM.war.blockade.request.cmd.diff("3d").note("some reason").toSlashCommand(true)+ """
                     Press `Low` if low on resources
                     Press `deposit` if you need to deposit
                     Press `broke` if you are out of resources
@@ -449,19 +508,18 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
                     Press `break` to find enemies w/ blockades
                     Press `unpowered` to find enemies w/ blockades on unpowered allies
                     """;
-            body += "\nSee e.g: " + CM.war.blockade.find.cmd.create("~allies", null, "250", null).toSlashCommand();
+            body += "\nSee e.g: " + CM.war.blockade.find.cmd.allies("~allies").myShips("250").toSlashCommand();
 
             if (channelId != null) {
                 body += "\n\n> Results in <#" + channelId + ">";
             }
 
-            CM.war.blockade.request low = CM.war.blockade.request.cmd.create("3d", "Low on resources", null);
-            CM.war.blockade.request deposit = CM.war.blockade.request.cmd.create("3d", "Need to deposit", null);
-            CM.war.blockade.request broke = CM.war.blockade.request.cmd.create("3d", "Broke", null);
-            CM.war.blockade.find breakCmd = CM.war.blockade.find.cmd.create("~allies,#active_m<2880", null, null, "10");
-            CM.war.blockade.find breakUnpowered = CM.war.blockade.find.cmd.create("~allies,#ispowered=0,#active_m<2880", null, null, "10");
+            CM.war.blockade.request low = CM.war.blockade.request.cmd.diff("3d").note("Low on resources");
+            CM.war.blockade.request deposit = CM.war.blockade.request.cmd.diff("3d").note("Need to deposit");
+            CM.war.blockade.request broke = CM.war.blockade.request.cmd.diff("3d").note("Broke");
+            CM.war.blockade.find breakCmd = CM.war.blockade.find.cmd.allies("~allies,#active_m<2880").numResults("10");
+            CM.war.blockade.find breakUnpowered = CM.war.blockade.find.cmd.allies("~allies,#ispowered=0,#active_m<2880").numResults("10");
 
-            CommandBehavior behavior = CommandBehavior.UNPRESS;
             io.create().embed(title, body)
                     .commandButton(behavior, channelId, low, "low")
                     .commandButton(behavior, channelId, deposit, "deposit")
@@ -473,7 +531,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
 
         @Command(desc="Econ panel for members")
         @RolePermission(Roles.ADMIN)
-        public void memberEconPanel(@Me User user, @Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel, @Switch("d") boolean showDepositsInDms) {
+        public void memberEconPanel(@Me IMessageIO io, @Default MessageChannel outputChannel, @Default CommandBehavior behavior, @Switch("d") boolean showDepositsInDms) {
+            if (behavior == null) behavior = CommandBehavior.UNPRESS;
             Long channelId = outputChannel == null ? null : outputChannel.getIdLong();
             String title = "Econ Panel";
             String body = """
@@ -492,17 +551,16 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
                 body += "\n\n> Results in <#" + channelId + ">";
             }
 
-            CM.offshore.send send = CM.offshore.send.cmd.create(null, null, null, null);
-            CM.deposits.check deposits = CM.deposits.check.cmd.create("{nation_id}", null, null, null, null, null, showDepositsInDms + "", null, null, null, null);
-            CM.deposits.check depositsBreakdown = CM.deposits.check.cmd.create("{nation_id}", null, null, null, null, "true", null, null, null, null, null);
-            CM.tax.info taxInfo = CM.tax.info.cmd.create("{nation_id}");
-            CM.nation.revenue revenue = CM.nation.revenue.cmd.create("{nation_id}", "true", null, null, null, null, null, null);
-            CM.city.optimalBuild optimalbuild = CM.city.optimalBuild.cmd.create("{city 1}", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
-            CM.trade.price tradeprice = CM.trade.price.cmd.create();
-            CM.trade.margin trademargin = CM.trade.margin.cmd.create(null);
-            CM.trade.profit tradeprofit = CM.trade.profit.cmd.create("{nation_id}", "7d");
+            CM.offshore.send send = CM.offshore.send.cmd.createEmpty();
+            CM.deposits.check deposits = CM.deposits.check.cmd.nationOrAllianceOrGuild("{nation_id}").replyInDMs(showDepositsInDms ? "true" : null);
+            CM.deposits.check depositsBreakdown = CM.deposits.check.cmd.nationOrAllianceOrGuild("{nation_id}").showCategories("true");
+            CM.tax.info taxInfo = CM.tax.info.cmd.nation("{nation_id}");
+            CM.nation.revenue revenue = CM.nation.revenue.cmd.nations("{nation_id}").includeUntaxable("true");
+            CM.city.optimalBuild optimalbuild = CM.city.optimalBuild.cmd.build("{city 1}");
+            CM.trade.price tradeprice = CM.trade.price.cmd.createEmpty();
+            CM.trade.margin trademargin = CM.trade.margin.cmd.createEmpty();
+            CM.trade.profit tradeprofit = CM.trade.profit.cmd.nations("{nation_id}").time("7d");
 
-            CommandBehavior behavior = CommandBehavior.UNPRESS;
             io.create().embed(title, body)
                     .commandButton(behavior, channelId, send, "offshore")
                     .commandButton(behavior, channelId, deposits, "balance")
@@ -552,7 +610,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
     @Command(desc="High infra targets where you are losing\n" +
             "To find contestable range, see: strengthTierGraph")
     @RolePermission(Roles.ADMIN)
-    public void warGuerilla(@Me User user, @Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel) {
+    public void warGuerilla(@Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel, @Default CommandBehavior behavior) {
+        if (behavior == null) behavior = CommandBehavior.UNPRESS;
         if (db.getCoalition(Coalition.ENEMIES).isEmpty()) {
             throw new IllegalArgumentException("No `" + Coalition.ENEMIES.name() + "` coalition. See " + CM.coalition.create.cmd.toSlashMention());
         }
@@ -572,20 +631,18 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             body += "\n\n> Results in <#" + channelId + ">";
         }
 
-        CommandBehavior behavior = CommandBehavior.UNPRESS;
-
-        CM.war.find.damage damage = CM.war.find.damage.cmd.create(
-                "~enemies", null, null, null, null, null, null, null, null, null, null);
-        CM.war.find.damage damageWeak = CM.war.find.damage.cmd.create(
-                "~enemies", "true", "true", "true", null, null, null, null, null, null, null);
-        CM.war.find.damage damageNoNavy = CM.war.find.damage.cmd.create(
-                "~enemies", null, null, null, "true", null, null, null, null, null, null);
-        CM.war.find.damage damageNoVDS = CM.war.find.damage.cmd.create(
-                "~enemies,#hasProject(vital_defense_system)=0", null, null, null, null, null, null, null, null, null, null);
-        CM.war.find.damage damageNoID = CM.war.find.damage.cmd.create(
-                "~enemies,#hasProject(iron_dome)=0", null, null, null, null, null, null, null, null, null, null);
-        CM.war.find.damage damageNoVDSID = CM.war.find.damage.cmd.create(
-                "~enemies,#hasProject(iron_dome)=0,#hasProject(vital_defense_system)=0", null, null, null, null, null, null, null, null, null, null);
+        CM.war.find.damage damage = CM.war.find.damage.cmd.nations(
+                "~enemies");
+        CM.war.find.damage damageWeak = CM.war.find.damage.cmd.nations(
+                "~enemies").includeApps("true").includeInactives("true").filterWeak("true");
+        CM.war.find.damage damageNoNavy = CM.war.find.damage.cmd.nations(
+                "~enemies").noNavy("true");
+        CM.war.find.damage damageNoVDS = CM.war.find.damage.cmd.nations(
+                "~enemies,#hasProject(vital_defense_system)=0");
+        CM.war.find.damage damageNoID = CM.war.find.damage.cmd.nations(
+                "~enemies,#hasProject(iron_dome)=0");
+        CM.war.find.damage damageNoVDSID = CM.war.find.damage.cmd.nations(
+                "~enemies,#hasProject(iron_dome)=0,#hasProject(vital_defense_system)=0");
 
         io.create().embed(title, body)
                 .commandButton(behavior, channelId, damage, "active")
@@ -613,11 +670,12 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
     @Command(desc="Enemy war targets where a score range is not contestable\n" +
             "To find contestable range, see: strengthTierGraph")
     @RolePermission(Roles.ADMIN)
-    public void warContestedRange(@Me User user, @Me GuildDB db, @Me IMessageIO io,
-                                  @Arg("If the cutoff is greater or less than the score") Operation greaterOrLess,
+    public void warContestedRange(@Me GuildDB db, @Me IMessageIO io,
+                                  @Arg("If the cutoff is greater or less than the score") MathOperation greaterOrLess,
                                   @Arg("The score at which the conflict is not contestable")
-                                  double score, @Default MessageChannel outputChannel, @Switch("d") boolean resultsInDm) {
-        if (greaterOrLess == Operation.EQUAL || greaterOrLess == Operation.NOT_EQUAL) {
+                                  double score, @Default MessageChannel outputChannel, @Default CommandBehavior behavior, @Switch("d") boolean resultsInDm) {
+        if (behavior == null) behavior = CommandBehavior.UNPRESS;
+        if (greaterOrLess == MathOperation.EQUAL || greaterOrLess == MathOperation.NOT_EQUAL) {
             if (db.getCoalition(Coalition.ENEMIES).isEmpty()) {
                 throw new IllegalArgumentException("No " + Coalition.ENEMIES.name() + " coalition found. See: " + CM.coalition.create.cmd.toSlashMention());
             }
@@ -649,32 +707,31 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             body += "\n\n> Results in DM";
         }
 
-        Operation opposite = greaterOrLess.opposite();
-        boolean greater = greaterOrLess == Operation.GREATER || greaterOrLess == Operation.GREATER_EQUAL;
+        MathOperation opposite = greaterOrLess.opposite();
+        boolean greater = greaterOrLess == MathOperation.GREATER || greaterOrLess == MathOperation.GREATER_EQUAL;
         double minScore = greater ? score : 0;
         double maxScore = greater ? Integer.MAX_VALUE : score;
         String rangeStr = String.format("%.2f", minScore) + "," + String.format("%.2f", maxScore);
 
         String dmStr = resultsInDm ? "true" : null;
-        CM.war.find.enemy easy = CM.war.find.enemy.cmd.create(
-                "~enemies,#off>0", null, null, null, null, null, null, "true", null, dmStr, null);
+        CM.war.find.enemy easy = CM.war.find.enemy.cmd.targets(
+                "~enemies,#off>0").onlyEasy("true").resultsInDm(dmStr);
         int scoreMax;
-        if (greaterOrLess == Operation.GREATER || greaterOrLess == Operation.GREATER_EQUAL) {
+        if (greaterOrLess == MathOperation.GREATER || greaterOrLess == MathOperation.GREATER_EQUAL) {
             scoreMax = (int) Math.ceil(score / 0.75);
         } else {
             scoreMax = (int) Math.ceil(score * 0.75);
         }
         int scoreInt = (int) score;
-        CM.war.find.enemy high = CM.war.find.enemy.cmd.create(
-                "~enemies,#off>0,#score" + opposite + scoreMax + ",#strongestEnemyOfScore" + rangeStr + "<1,#strongestEnemyOfScore" + rangeStr + ">0.66", null, null, null, null, "true", null, null, null, dmStr, null);
-        CM.war.find.enemy low = CM.war.find.enemy.cmd.create(
-                "~enemies,#off>0,#score" + opposite + scoreMax + ",#strongestEnemyOfScore" + rangeStr + "<1,#strongestEnemyOfScore" + rangeStr + ">0.66", null, null, null, null, "true", null, "true", null, dmStr, null);
-        CM.war.find.enemy weak = CM.war.find.enemy.cmd.create(
-                "~enemies", null, null, "true", "true", null, null, "true", null, dmStr, "true");
-        CM.war.find.damage infra = CM.war.find.damage.cmd.create(
-                "~enemies,#active_m>2880|~enemies,#score" + greaterOrLess + scoreMax +"|~enemies,#barracks=0,#off=0", "true", "true", null, null, null, null, null, dmStr, null, null);
+        CM.war.find.enemy high = CM.war.find.enemy.cmd.targets(
+                "~enemies,#off>0,#score" + opposite + scoreMax + ",#strongestEnemyOfScore" + rangeStr + "<1,#strongestEnemyOfScore" + rangeStr + ">0.66").onlyPriority("true").resultsInDm(dmStr);
+        CM.war.find.enemy low = CM.war.find.enemy.cmd.targets(
+                "~enemies,#off>0,#score" + opposite + scoreMax + ",#strongestEnemyOfScore" + rangeStr + "<1,#strongestEnemyOfScore" + rangeStr + ">0.66").onlyPriority("true").onlyWeak("true").resultsInDm(dmStr);
+        CM.war.find.enemy weak = CM.war.find.enemy.cmd.targets(
+                "~enemies").includeInactives("true").includeApplicants("true").onlyEasy("true").resultsInDm(dmStr).includeStrong("true");
+        CM.war.find.damage infra = CM.war.find.damage.cmd.nations(
+                "~enemies,#active_m>2880|~enemies,#score" + greaterOrLess + scoreMax +"|~enemies,#barracks=0,#off=0").includeApps("true").includeInactives("true").resultsInDm(dmStr);
 
-        CommandBehavior behavior = CommandBehavior.UNPRESS;
         io.create().embed(title, body)
                 .commandButton(behavior, channelId, easy, "easy")
                 .commandButton(behavior, channelId, high, "high")
@@ -687,7 +744,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
     // Spy embed with spy - airplane - tank - ship spying - auto
   @Command(desc="Enemy espionage finder discord embed template")
   @RolePermission(Roles.ADMIN)
-  public void spyEnemy(@Me User user, @Me GuildDB db, @Me IMessageIO io, @Default @GuildCoalition String coalition, @Default MessageChannel outputChannel) {
+  public void spyEnemy(@Me GuildDB db, @Me IMessageIO io, @Default @GuildCoalition String coalition, @Default MessageChannel outputChannel, @Default CommandBehavior behavior) {
+      if (behavior == null) behavior = CommandBehavior.UNPRESS;
         if (coalition == null) coalition = Coalition.ENEMIES.name();
         if (db.getCoalition(coalition).isEmpty()) {
             throw new IllegalArgumentException("No `" + coalition + "` coalition found. See: " + CM.coalition.create.cmd.toSlashMention());
@@ -711,24 +769,22 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             body += "\n\n> Results in <#" + channelId + ">";
         }
 
-      CM.spy.find.target spy = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<1440", SpyCount.Operation.SPIES.name(), null, null, null, null);
-        CM.spy.find.target airplane = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<1440", SpyCount.Operation.AIRCRAFT.name(), null, null, null, null);
-        CM.spy.find.target tank = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<1440", SpyCount.Operation.TANKS.name(), null, null, null, null);
-        CM.spy.find.target ship = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<1440", SpyCount.Operation.SHIPS.name(), null, null, null, null);
-        CM.spy.find.target missile = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<2880", SpyCount.Operation.MISSILE.name(), null, null, null, null);
-        CM.spy.find.target nuke = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<2880", SpyCount.Operation.NUKE.name(), null, null, null, null);
-        CM.spy.find.target dmg = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<1440", "*", null, null, null, null);
-        CM.spy.find.target kill = CM.spy.find.target.cmd.create(
-                "~" + coalition + ",#active_m<1440", "*", null, null, "true", null);
-
-        CommandBehavior behavior = CommandBehavior.UNPRESS;
+      CM.spy.find.target spy = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<1440").operations(SpyCount.Operation.SPIES.name());
+        CM.spy.find.target airplane = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<1440").operations(SpyCount.Operation.AIRCRAFT.name());
+        CM.spy.find.target tank = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<1440").operations(SpyCount.Operation.TANKS.name());
+        CM.spy.find.target ship = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<1440").operations(SpyCount.Operation.SHIPS.name());
+        CM.spy.find.target missile = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<2880").operations(SpyCount.Operation.MISSILE.name());
+        CM.spy.find.target nuke = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<2880").operations(SpyCount.Operation.NUKE.name());
+        CM.spy.find.target dmg = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<1440").operations("*");
+        CM.spy.find.target kill = CM.spy.find.target.cmd.targets(
+                "~" + coalition + ",#active_m<1440").operations("*").prioritizeKills("true");
 
         io.create().embed(title, body)
             .commandButton(behavior, channelId, spy, "spy")
@@ -759,7 +815,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             "Prioritizes down declares\n" +
             "To find contestable range, see: strengthTierGraph")
     @RolePermission(Roles.ADMIN)
-    public void warWinning(@Me User user, @Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel, @Switch("d") boolean resultsInDm) {
+    public void warWinning(@Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel, @Default CommandBehavior behavior, @Switch("d") boolean resultsInDm) {
+        if (behavior == null) behavior = CommandBehavior.UNPRESS;
         if (db.getCoalition(Coalition.ENEMIES).isEmpty()) {
             throw new IllegalArgumentException("No " + Coalition.ENEMIES.name() + " coalition found. See: " + CM.coalition.create.cmd.toSlashMention());
         }
@@ -782,22 +839,21 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
         }
 
         String dmStr = resultsInDm ? "true" : null;
-        CM.war.find.enemy high = CM.war.find.enemy.cmd.create(
-                "~enemies,#fighting(~allies),#getStrongestEnemy()>0.66", null, null, null, null, "true", null, "true", null, dmStr, null);
-        CM.war.find.enemy med = CM.war.find.enemy.cmd.create(
-                "~enemies,#fighting(~allies)", null, null, null, null, "true", null, "true", null, dmStr, null);
-        CM.war.find.enemy low = CM.war.find.enemy.cmd.create(
-                "~enemies", null, null, null, null, "true", null, "true", null, dmStr, null);
-        CM.war.find.enemy easy = CM.war.find.enemy.cmd.create(
-                "~enemies", null, null, null, null, null, null, "true", null, dmStr, null);
-        CM.war.find.enemy inactive = CM.war.find.enemy.cmd.create(
-                "~enemies", null, null, "true", "true", null, null, "true", null, dmStr, null);
-        CM.war.find.damage infra = CM.war.find.damage.cmd.create(
-                "~enemies", "true", "true", null, null, null, null, null, null, dmStr, null);
-        CM.war.find.enemy beige = CM.war.find.enemy.cmd.create(
-                "~enemies,#color=beige", null, null, "true", "true", null, null, "true", null, dmStr, null);
-
-        CommandBehavior behavior = CommandBehavior.UNPRESS;
+        CM.war.find.enemy high = CM.war.find.enemy.cmd.targets(
+                "~enemies,#fighting(~allies),#getStrongestEnemy()>0.66").onlyPriority("true").onlyEasy("true")
+                .resultsInDm(dmStr);
+        CM.war.find.enemy med = CM.war.find.enemy.cmd.targets(
+                "~enemies,#fighting(~allies)").onlyPriority("true").onlyEasy("true").resultsInDm(dmStr);
+        CM.war.find.enemy low = CM.war.find.enemy.cmd.targets(
+                "~enemies").onlyPriority("true").onlyEasy("true").resultsInDm(dmStr);
+        CM.war.find.enemy easy = CM.war.find.enemy.cmd.targets(
+                "~enemies").onlyEasy("true").resultsInDm(dmStr);
+        CM.war.find.enemy inactive = CM.war.find.enemy.cmd.targets(
+                "~enemies").includeInactives("true").includeApplicants("true").onlyEasy("true").resultsInDm(dmStr);
+        CM.war.find.damage infra = CM.war.find.damage.cmd.nations(
+                "~enemies").includeApps("true").includeInactives("true").resultsInDm(dmStr);
+        CM.war.find.enemy beige = CM.war.find.enemy.cmd.targets(
+                "~enemies,#color=beige").includeInactives("true").includeApplicants("true").onlyEasy("true").resultsInDm(dmStr);
 
         io.create().embed(title, body)
             .commandButton(behavior, channelId, high, "high")
@@ -813,7 +869,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
     @Command(desc = "Discord embed for Econ Staff to view deposits, stockpiles, revenue, tax brackets, tax income, warchest and offshore funds")
     @RolePermission(Roles.ADMIN)
     @IsAlliance
-    public void econPanel(@Me GuildDB db, @Me IMessageIO io, @Switch("c") MessageChannel outputChannel, @Switch("n") DepositType useFlowNote, @Arg("Include past depositors in deposits sheet") @Switch("p") Set<Integer> includePastDepositors) {
+    public void econPanel(@Me GuildDB db, @Me IMessageIO io, @Switch("c") MessageChannel outputChannel, @Switch("b") CommandBehavior behavior, @Switch("n") DepositType useFlowNote, @Arg("Include past depositors in deposits sheet") @Switch("p") Set<Integer> includePastDepositors) {
+        if (behavior == null) behavior = outputChannel == null ? CommandBehavior.EPHEMERAL : CommandBehavior.UNPRESS;
         // useFlowNoteStr
         String useFlowNoteStr = useFlowNote == null ? null : useFlowNote.toString();
         // pastDepositorsStr
@@ -848,27 +905,27 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
 
         String allianceStr = db.getAllianceIds().stream().map(f -> "AA:" + f).collect(Collectors.joining(",")) + ",#position>1,#vm_turns=0";
 
-        CommandBehavior behavior = outputChannel == null ? CommandBehavior.EPHEMERAL : CommandBehavior.UNPRESS;
+
 
         IMessageBuilder msg = io.create().embed(title, body);
         if (offshoreBalance) {
-            msg = msg.commandButton(behavior, channelId, CM.offshore.accountSheet.cmd.create(null), "offshore");
+            msg = msg.commandButton(behavior, channelId, CM.offshore.accountSheet.cmd.createEmpty(), "offshore");
         }
         if (offshoreSend) {
-            msg = msg.commandButton(behavior, channelId, CM.offshore.send.cmd.create(null, null, null, null), "offshore");
+            msg = msg.commandButton(behavior, channelId, CM.offshore.send.cmd.createEmpty(), "offshore");
         }
         // deposits
-        msg = msg.commandButton(behavior, channelId, CM.deposits.sheet.cmd.create(null, null, null, null, null, null, null, null, pastDepositorsStr, null, useFlowNoteStr, null), "deposits");
+        msg = msg.commandButton(behavior, channelId, CM.deposits.sheet.cmd.includePastDepositors(pastDepositorsStr).useFlowNote(useFlowNoteStr), "deposits");
         // stockpile
-        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.stockpileSheet.cmd.create(null, null, null, null), "stockpile");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.stockpileSheet.cmd.createEmpty(), "stockpile");
         // revenue
-        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.revenueSheet.cmd.create(allianceStr, null, null), "revenue");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.revenueSheet.cmd.nations(allianceStr), "revenue");
         // bracket
-        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.taxBracketSheet.cmd.create(null, null), "bracket");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.taxBracketSheet.cmd.createEmpty(), "bracket");
         // tax
-        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.taxRevenue.cmd.create(null, null, null, null), "tax");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.taxRevenue.cmd.createEmpty(), "tax");
         // warchest
-        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.warchestSheet.cmd.create(allianceStr, null, null, null, null, null, null, null), "warchest");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_econ.warchestSheet.cmd.nations(allianceStr), "warchest");
         msg.send();
     }
 
@@ -883,7 +940,8 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
     @Command(desc = "Discord embed for Internal Affairs Staff to auto-assign roles and view member activity, audit results, daychange, spy purchase, mmr")
     @RolePermission(Roles.ADMIN)
     @IsAlliance
-    public void iaPanel(@Me GuildDB db, @Me IMessageIO io, @Switch("c") MessageChannel outputChannel) {
+    public void iaPanel(@Me GuildDB db, @Me IMessageIO io, @Switch("c") MessageChannel outputChannel, @Switch("b") CommandBehavior behavior) {
+        if (behavior == null) behavior = outputChannel == null ? CommandBehavior.EPHEMERAL : CommandBehavior.UNPRESS;
         String title = "IA Panel";
         String body = """
                 Press `audit` to view member audit sheet
@@ -900,25 +958,23 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             body += "\n\n> Results in <#" + channelId + ">";
         }
 
-        CommandBehavior behavior = outputChannel == null ? CommandBehavior.EPHEMERAL : CommandBehavior.UNPRESS;
-
         String allianceStr = db.getAllianceIds().stream().map(f -> "AA:" + f).collect(Collectors.joining(",")) + ",#position>1,#vm_turns=0";
 
         IMessageBuilder msg = io.create().embed(title, body);
         // audit
-        msg = msg.commandButton(behavior, channelId, CM.audit.sheet.cmd.create(null, null, null, null, null, null), "audit");
+        msg = msg.commandButton(behavior, channelId, CM.audit.sheet.cmd.createEmpty(), "audit");
         // mail
-        msg = msg.commandButton(behavior, channelId, CM.audit.run.cmd.create(allianceStr, null, null, "true", null, null), "mail");
+        msg = msg.commandButton(behavior, channelId, CM.audit.run.cmd.nationList(allianceStr).mailResults("true"), "mail");
         // activity
-        msg = msg.commandButton(behavior, channelId, CM.sheets_ia.ActivitySheet.cmd.create(allianceStr, null, null), "activity");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_ia.ActivitySheet.cmd.nations(allianceStr), "activity");
         // daychange
-        msg = msg.commandButton(behavior, channelId, CM.sheets_ia.daychange.cmd.create(allianceStr, null), "dc");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_ia.daychange.cmd.nations(allianceStr), "dc");
         // spies
-        msg = msg.commandButton(behavior, channelId, CM.audit.hasNotBoughtSpies.cmd.create(allianceStr), "spies");
+        msg = msg.commandButton(behavior, channelId, CM.audit.hasNotBoughtSpies.cmd.nations(allianceStr), "spies");
         // mmr
-        msg = msg.commandButton(behavior, channelId, CM.sheets_milcom.MMRSheet.cmd.create(allianceStr, null, null, null, null), "mmr");
+        msg = msg.commandButton(behavior, channelId, CM.sheets_milcom.MMRSheet.cmd.nations(allianceStr), "mmr");
         // auto
-        msg = msg.commandButton(behavior, channelId, CM.role.autoassign.cmd.create(null), "auto");
+        msg = msg.commandButton(behavior, channelId, CM.role.autoassign.cmd.createEmpty(), "auto");
 
         msg.send();
     }
@@ -927,7 +983,7 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
     @HasOffshore
     @RolePermission(Roles.ADMIN)
     public void depositsPanel(@Me GuildDB db, @Me IMessageIO io, @Arg("Only applicable to corporate servers. The nation accepting trades for bank deposits. Defaults to the bot owner's nation") @Default DBNation bankerNation, @Switch("c") MessageChannel outputChannel) {
-        int nationId = Settings.INSTANCE.NATION_ID;
+        int nationId = Locutus.loader().getNationId();
         if (bankerNation != null) {
             nationId = bankerNation.getId();
         }
@@ -955,11 +1011,11 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
                     "Press `trade deposit` if you have sent trades\n" +
                     "Press `trade deposit amount` if you want to create trades for an amount\n";
 
-            addButtons.add(CM.trade.accept.cmd.create(nationId + "", null, null, null));
+            addButtons.add(CM.trade.accept.cmd.receiver(nationId + ""));
             addLabels.add("deposit trade");
             isModals.add(false);
 
-            addButtons.add(CM.trade.accept.cmd.create(nationId + "", "", null, null));
+            addButtons.add(CM.trade.accept.cmd.receiver(nationId + "").amount(""));
             addLabels.add("deposit trade amount");
             isModals.add(false);
         } else {
@@ -968,16 +1024,16 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
                     "And then press" +
                     "- `deposit custom` or `deposit auto`" +
                     "- `offshore` to offshore funds";
-            addButtons.add(CM.bank.deposit.cmd.create("nation:{nation_id}", null, "", null, null, null, null, null, null, null, null, null, null, null, "true", "true"));
+            addButtons.add(CM.bank.deposit.cmd.nations("nation:{nation_id}").amount("").useApi("true").force("true"));
             addLabels.add("deposit custom");
             isModals.add(true);
 
 
-            CommandRef depositAuto = CM.bank.deposit.cmd.create("nation:{nation_id}", null, null, "7", null, null, "1", null, null, null, null, null, null, null, "true", "true");
+            CommandRef depositAuto = CM.bank.deposit.cmd.nations("nation:{nation_id}").rawsDays("7").keepWarchestFactor("1").useApi("true").force("true");
             addButtons.add(depositAuto);
             addLabels.add("deposit auto");
             isModals.add(false);
-            CommandRef offshore = CM.offshore.send.cmd.create(null, null, null, null);
+            CommandRef offshore = CM.offshore.send.cmd.createEmpty();
             addButtons.add(offshore);
             addLabels.add("offshore");
             isModals.add(false);
@@ -988,10 +1044,10 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             body += "\n\n> Results in <#" + channelId + ">";
         }
 
-        CM.deposits.check deposits = CM.deposits.check.cmd.create("nation:{nation_id}", null, null, null, null, null, null, null, null, null, null);
-        CM.transfer.self self = CM.transfer.self.cmd.create("", null, null, null, null, null, null, null, null, null, null, null, null, null);
-        CM.transfer.resources other = CM.transfer.resources.cmd.create("", "", null, "{nation_id}", null, null, null, null, null, null, null, null, null, null, null, null);
-        CM.nation.stockpile stockpile = CM.nation.stockpile.cmd.create("nation:{nation_id}");
+        CM.deposits.check deposits = CM.deposits.check.cmd.nationOrAllianceOrGuild("nation:{nation_id}");
+        CM.transfer.self self = CM.transfer.self.cmd.amount("");
+        CM.transfer.resources other = CM.transfer.resources.cmd.receiver("").transfer("").nationAccount("{nation_id}").depositType("#ignore");
+        CM.nation.stockpile stockpile = CM.nation.stockpile.cmd.nationOrAlliance("nation:{nation_id}");
 
         CommandBehavior behavior = CommandBehavior.EPHEMERAL;
 
@@ -1021,12 +1077,12 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             "- All allies\n" +
             "- Underutilized allies")
     @RolePermission(Roles.ADMIN)
-    public void allyEnemySheets(ValueStore store, NationPlaceholders placeholders,
-            @Me User user, @Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel,
+    public void allyEnemySheets(@Me GuildDB db, @Me IMessageIO io, @Default MessageChannel outputChannel,
                                 @Default SpreadSheet allEnemiesSheet,
                                 @Default SpreadSheet priorityEnemiesSheet,
                                 @Default SpreadSheet allAlliesSheet,
-                                @Default SpreadSheet underutilizedAlliesSheet) throws GeneralSecurityException, IOException {
+                                @Default SpreadSheet underutilizedAlliesSheet, @Default CommandBehavior behavior) throws GeneralSecurityException, IOException {
+        if (behavior == null) behavior = CommandBehavior.UNPRESS;
         Long channelId = outputChannel == null ? null : outputChannel.getIdLong();
         if (db.getCoalition(Coalition.ALLIES).isEmpty()) {
             throw new IllegalArgumentException("No `" + Coalition.ALLIES.name() + "` coalition found. See: " + CM.coalition.create.cmd.toSlashMention());
@@ -1166,39 +1222,33 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
             footer = "\n\n> Output in " + outputChannel.getAsMention();
         }
 
-        CommandBehavior behavior = CommandBehavior.UNPRESS;
-
         io.create()
                 .embed("All Enemies Sheet", "Press `update` to update" + footer).commandButton(behavior, channelId,
-                        CM.nation.sheet.NationSheet.cmd.create(
-                                allEnemies.getKey(),
-                                StringMan.join(allEnemies.getValue(), " "),
-                                null, null,
+                        CM.nation.sheet.NationSheet.cmd.nations(
+                                allEnemies.getKey()).columns(
+                                StringMan.join(allEnemies.getValue(), " ")).sheet(
                                 "sheet:" + allEnemiesSheet.getSpreadsheetId()
                         ), "update").send();
 
         io.create().embed("All Allies Sheet", "Press `update` to update" + footer).commandButton(behavior, channelId,
-                CM.nation.sheet.NationSheet.cmd.create(
-                        allAllies.getKey(),
-                        StringMan.join(allAllies.getValue(), " "),
-                        null, null,
+                CM.nation.sheet.NationSheet.cmd.nations(
+                        allAllies.getKey()).columns(
+                        StringMan.join(allAllies.getValue(), " ")).sheet(
                         "sheet:" + allAlliesSheet.getSpreadsheetId()
 
                 ), "update").send();
         io.create().embed("Priority Enemies Sheet", "Press `update` to update" + footer).commandButton(behavior, channelId,
-                CM.nation.sheet.NationSheet.cmd.create(
-                        priorityEnemies.getKey(),
-                        StringMan.join(priorityEnemies.getValue(), " "),
-                        null, null,
+                CM.nation.sheet.NationSheet.cmd.nations(
+                        priorityEnemies.getKey()).columns(
+                        StringMan.join(priorityEnemies.getValue(), " ")).sheet(
                         "sheet:" + priorityEnemiesSheet.getSpreadsheetId()
 
                 ), "update").send();
 
         io.create().embed("Underutilized Allies Sheet", "Press `update` to update" + footer).commandButton(behavior, channelId,
-                CM.nation.sheet.NationSheet.cmd.create(
-                        underutilizedAllies.getKey(),
-                        StringMan.join(underutilizedAllies.getValue(), " "),
-                        null, null,
+                CM.nation.sheet.NationSheet.cmd.nations(
+                        underutilizedAllies.getKey()).columns(
+                        StringMan.join(underutilizedAllies.getValue(), " ")).sheet(
                         "sheet:" + underutilizedAlliesSheet.getSpreadsheetId()
 
                 ), "update").send();
@@ -1219,8 +1269,6 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
 //        2. Update active enemy spy counts
 //        3. Spy blitz sheet (spyops coalition)
 //        4. Mail targets (spyops coalition)
-
-        String title = "Spy Sheets";
 
         String footer = "\n\n(do not spam)";
         if (outputChannel != null) {
@@ -1248,80 +1296,67 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
                 "{missiles}",
                 "{nukes}",
                 "{spies}",
-                "{war_policy}",
+                "{warpolicy}",
                 "={active_m}/60",
                 "{avg_daily_login}",
-                "'=\"{mmr}\"'"
+                "'=\"{mmr}\"'",
+                "{hasProject(" + Projects.INTELLIGENCE_AGENCY.name() + ")}",
+                "{hasProject(" + Projects.SPY_SATELLITE.name() + ")}",
+                "{hasProject(" + Projects.SURVEILLANCE_NETWORK.name() + ")}"
         ), " ");
 
         String spySheetId = spySheet != null ? spySheet.getSpreadsheetId() : SpreadSheet.create(db, SheetKey.SPYOP_SHEET).getSpreadsheetId();
 
         io.create().embed("Update ally", "Press `allies` to update active ally spy counts" + footer)
-                .commandButton(behavior, channelId, CM.nation.sheet.NationSheet.cmd.create(
-                        "~" + allies + ",#vm_turns=0,#position>1,#active_m<1440,#cities>=10",
-                        columns, null,
-                        "true",
-                        null
+                .commandButton(behavior, channelId, CM.nation.sheet.NationSheet.cmd.nations(
+                        "~" + allies + ",#vm_turns=0,#position>1,#active_m<1440,#cities>=10").columns(
+                        columns
                 ), "allies").send();
 
         io.create().embed("Update enemy", "Press `enemies` to update active enemy spy counts" + footer)
-                .commandButton(behavior, channelId, CM.nation.sheet.NationSheet.cmd.create(
-                        "~enemies,#vm_turns=0,#position>1,#active_m<1440,#cities>=10",
-                        columns, null,
-                        "true",
-                        null
+                .commandButton(behavior, channelId, CM.nation.sheet.NationSheet.cmd.nations(
+                        "~enemies,#vm_turns=0,#position>1,#active_m<1440,#cities>=10").columns(
+                        columns
                 ), "enemies").send();
 
         io.create().embed("Blitz priority kills", "Press `blitz_kill` for a spy blitz sheet focusing spies/air" + footer)
-        .commandButton(behavior, channelId, CM.spy.sheet.generate.cmd.create(
-                        "~" + allies + ",#vm_turns=0,#position>1,#active_m<1440,#cities>=10",
-                        "~enemies,#vm_turns=0,#position>1,#active_m<1440,#cities>=10",
-                        StringMan.join(Arrays.asList(SpyCount.Operation.SPIES.name(),SpyCount.Operation.AIRCRAFT.name()), ","),
-                        "true",
-                        "true",
-                        "true",
-                        "sheet:" + spySheetId,
-                        null,
-                        null, null, null, null, null
+        .commandButton(behavior, channelId, CM.spy.sheet.generate.cmd.attackers(
+                        "~" + allies + ",#vm_turns=0,#position>1,#active_m<1440,#cities>=10").defenders(
+                        "~enemies,#vm_turns=0,#position>1,#active_m<1440,#cities>=10").allowedTypes(
+                        StringMan.join(Arrays.asList(SpyCount.Operation.SPIES.name(),SpyCount.Operation.AIRCRAFT.name()), ",")).forceUpdate(
+                        "true").checkEspionageSlots(
+                        "true").prioritizeKills(
+                        "true").sheet(
+                        "sheet:" + spySheetId
                 ), "blitz_kill").send();
 
         io.create().embed("Blitz priority damage", "Press `blitz_dmg` for a spy blitz sheet focusing damage" + footer)
-                .commandButton(behavior, channelId, CM.spy.sheet.generate.cmd.create(
-                        "~" + allies + ",#vm_turns=0,#position>1,#active_m<1440,#cities>=10",
-                        "~enemies,#vm_turns=0,#position>1,#active_m<1440,#cities>=10",
-                        null,
-                        "true",
-                        "true",
-                        "true",
-                        "sheet:" + spySheetId,
-                        null,
-                        null, null, null, null, null
+                .commandButton(behavior, channelId, CM.spy.sheet.generate.cmd.attackers(
+                        "~" + allies + ",#vm_turns=0,#position>1,#active_m<1440,#cities>=10").defenders(
+                        "~enemies,#vm_turns=0,#position>1,#active_m<1440,#cities>=10").forceUpdate(
+                        "true").checkEspionageSlots(
+                        "true").prioritizeKills(
+                        "true").sheet(
+                        "sheet:" + spySheetId
                 ), "blitz_dmg").send();
         io.create().embed("Validate and send", """
                         Press `check` to validate spy blitz sheet
                         Press `mail` to mail targets
                         """ + footer)
-                .commandButton(behavior, channelId, CM.spy.sheet.validate.cmd.create(
-                        "sheet:" + spySheetId,
-                        null,
-                        "~" + allies, null
+                .commandButton(behavior, channelId, CM.spy.sheet.validate.cmd.sheet(
+                        "sheet:" + spySheetId).filter(
+                        "~" + allies
                 ), "validate")
-        .commandButton(behavior, channelId, CM.mail.targets.cmd.create(
-                        null,
-                        "sheet:" + spySheetId,
-                        "~" + allies,
-                        null,
-                        "true",
-                        null,
-                        null,
-                        null,
-                        null, null, null
+        .commandButton(behavior, channelId, CM.mail.targets.cmd.spySheet(
+                        "sheet:" + spySheetId).allowedNations(
+                        "~" + allies).sendFromGuildAccount(
+                        "true").force("true"
                 ), "mail").send();
     }
 
     @Command(desc = "Create an embed to view a google document for multiple nations, with random variations for each receiver")
     @RolePermission(Roles.INTERNAL_AFFAIRS)
-    public void announceDocument(@Me GuildDB db, @Me Guild guild, @Me JSONObject command, @Me IMessageIO io,
+    public void announceDocument(@Me GuildDB db, @Me IMessageIO io,
                                 @Me User author,
                                 GoogleDoc original,
                                 NationList sendTo,
@@ -1337,7 +1372,7 @@ See e.g: `/war blockade find allies: ~allies numships: 250`
         Collection<DBNation> nations = sendTo.getNations();
         Set<String> results = StringMan.enumerateReplacements(announcement, replacementLines, nations.size() + 1000, 0, 0);
 
-        CM.announcement.view cmd = CM.announcement.view.cmd.create(annId + "", "true", null);
+        CM.announcement.view cmd = CM.announcement.view.cmd.ann_id(annId + "").document("true");
 
         StringBuilder body = new StringBuilder();
         body.append("Title: `" + title + "`\n");

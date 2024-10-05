@@ -6,6 +6,7 @@ import link.locutus.discord.apiv1.enums.NationColor;
 import link.locutus.discord.apiv1.enums.Rank;
 import link.locutus.discord.apiv1.enums.WarPolicy;
 import link.locutus.discord.apiv1.enums.city.project.Projects;
+import link.locutus.discord.apiv3.csv.ColumnInfo;
 import link.locutus.discord.apiv3.csv.column.BooleanColumn;
 import link.locutus.discord.apiv3.csv.column.DoubleColumn;
 import link.locutus.discord.apiv3.csv.column.EnumColumn;
@@ -18,6 +19,7 @@ import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.util.TimeUtil;
 
 import java.text.ParseException;
+import java.util.Map;
 import java.util.function.Predicate;
 
 public class NationHeader extends DataHeader<DBNation> {
@@ -78,7 +80,7 @@ public class NationHeader extends DataHeader<DBNation> {
 //    public int alliance_id; // int
     public final IntColumn<DBNation> alliance_id = new IntColumn<>(this, DBNation::setAlliance_id);
 //    public int alliance_position; // int
-    public final EnumColumn<DBNation, Rank> alliance_position = new EnumColumn<>(this, Rank.class, DBNation::setPosition, f -> Rank.values[Integer.parseInt(f)]);
+    public final EnumColumn<DBNation, Rank> alliance_position = new EnumColumn<>(this, Rank.class, DBNation::setPosition, f -> Rank.byId(Integer.parseInt(f)));
 //    public int soldiers; // int
     public final IntColumn<DBNation> soldiers = new IntColumn<>(this, DBNation::setSoldiers);
 //    public int tanks; // int
@@ -178,6 +180,10 @@ public class NationHeader extends DataHeader<DBNation> {
     public final BooleanColumn<DBNation> mars_landing_np = new BooleanColumn<>(this, (nation, value) -> nation.setProject(Projects.MARS_LANDING));
 //    public int surveillance_network_np;
     public final BooleanColumn<DBNation> surveillance_network_np = new BooleanColumn<>(this, (nation, value) -> nation.setProject(Projects.SURVEILLANCE_NETWORK));
+//    public int guiding_satellite_np
+    public final BooleanColumn<DBNation> guiding_satellite_np = new BooleanColumn<>(this, (nation, value) -> nation.setProject(Projects.GUIDING_SATELLITE));
+//    public int nuclear_launch_facility_np
+    public final BooleanColumn<DBNation> nuclear_launch_facility_np = new BooleanColumn<>(this, (nation, value) -> nation.setProject(Projects.NUCLEAR_LAUNCH_FACILITY));
 
     private DBNationSnapshot cached;
     private int nationLoaded;
@@ -259,6 +265,7 @@ public class NationHeader extends DataHeader<DBNation> {
         }
         nation.setAlliance_id(aaId);
         this.nation_id.set(nation);
+        this.nation_name.set(nation);
         this.continent.set(nation);
         this.color.set(nation);
         this.alliance_position.set(nation);
@@ -312,6 +319,8 @@ public class NationHeader extends DataHeader<DBNation> {
         setProject(nation, this.bureau_of_domestic_affairs_np);
         setProject(nation, this.mars_landing_np);
         setProject(nation, this.surveillance_network_np);
+        setProject(nation, this.guiding_satellite_np);
+        setProject(nation, this.nuclear_launch_facility_np);
         return nation;
     }
 

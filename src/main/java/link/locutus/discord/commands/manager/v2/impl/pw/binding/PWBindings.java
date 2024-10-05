@@ -12,7 +12,6 @@ import link.locutus.discord.commands.manager.v2.binding.ValueStore;
 import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.commands.manager.v2.binding.bindings.Placeholders;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PrimitiveBindings;
-import link.locutus.discord.commands.manager.v2.binding.bindings.TypedFunction;
 import link.locutus.discord.commands.manager.v2.command.CommandCallable;
 import link.locutus.discord.commands.manager.v2.command.ICommand;
 import link.locutus.discord.commands.manager.v2.command.ICommandGroup;
@@ -23,17 +22,15 @@ import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePerm
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.AlliancePlaceholders;
-import link.locutus.discord.commands.manager.v2.perm.PermissionHandler;
+import link.locutus.discord.db.conflict.Conflict;
+import link.locutus.discord.db.conflict.ConflictManager;
 import link.locutus.discord.db.entities.DBCity;
-import link.locutus.discord.commands.manager.v2.impl.pw.CommandManager2;
-import link.locutus.discord.commands.manager.v2.impl.pw.NationPlaceholder;
-import link.locutus.discord.commands.manager.v2.impl.pw.SimpleNationPlaceholder;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
-import link.locutus.discord.commands.war.WarCategory;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.commands.manager.v2.binding.BindingHelper;
 import link.locutus.discord.commands.manager.v2.impl.discord.binding.annotation.GuildCoalition;
 import link.locutus.discord.commands.manager.v2.impl.discord.binding.annotation.NationDepositLimit;
-import link.locutus.discord.commands.manager.v2.binding.bindings.Operation;
+import link.locutus.discord.commands.manager.v2.binding.bindings.MathOperation;
 import link.locutus.discord.commands.manager.v2.command.ParametricCallable;
 import link.locutus.discord.commands.manager.v2.impl.pw.commands.UnsortedCommands;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.NationPlaceholders;
@@ -53,6 +50,7 @@ import link.locutus.discord.db.entities.newsletter.Newsletter;
 import link.locutus.discord.db.entities.newsletter.NewsletterManager;
 import link.locutus.discord.db.guild.GuildSetting;
 import link.locutus.discord.db.guild.GuildKey;
+import link.locutus.discord.db.guild.GuildSettingCategory;
 import link.locutus.discord.event.mail.MailReceivedEvent;
 import link.locutus.discord.pnw.AllianceList;
 import link.locutus.discord.pnw.BeigeReason;
@@ -87,6 +85,7 @@ import net.dv8tion.jda.api.entities.User;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -150,7 +149,8 @@ public class PWBindings extends BindingHelper {
     }
 
     @Binding(value = "The name of a nation attribute\n" +
-            "See: <https://github.com/xdnw/locutus/wiki/nation_placeholders>", examples = {"color", "war_policy", "continent"})
+            "See: <https://github.com/xdnw/locutus/wiki/nation_placeholders>", examples = {"color", "war_policy", "continent"},
+    webType = "CommandCallable<DBNation>")
     @NationAttributeCallable
     public ParametricCallable nationAttribute(NationPlaceholders placeholders, ValueStore store, String input) {
         List<ParametricCallable> options = placeholders.getParametricCallables();
@@ -161,13 +161,16 @@ public class PWBindings extends BindingHelper {
         return metric;
     }
 
-    @Binding(value = "A discord slash command reference for the bot")
+    @Binding(value = "A discord slash command reference for the bot", webType = "CommandCallable")
     public ICommand slashCommand(String input) {
         List<String> split = StringMan.split(input, ' ');
         CommandCallable command = Locutus.imp().getCommandManager().getV2().getCallable(split);
         if (command == null) throw new IllegalArgumentException("No command found for `" + input + "`");
         if (command instanceof ICommandGroup group) {
-            throw new IllegalArgumentException("Command `" + input + "` is a group, not an endpoint. Please specify a sub command");
+            String prefix = group.getFullPath();
+            if (!prefix.isEmpty()) prefix += " ";
+            String optionsStr = "- `" + prefix + String.join("`\n- `" + prefix, group.primarySubCommandIds()) + "`";
+            throw new IllegalArgumentException("Command `" + input + "` is a group, not an endpoint. Please specify a sub command:\n" + optionsStr);
         }
         if (!(command instanceof ICommand)) throw new IllegalArgumentException("Command `" + input + "` is not a command endpoint");
         return (ICommand) command;
@@ -200,6 +203,11 @@ public class PWBindings extends BindingHelper {
         return emumSet(BeigeReason.class, input);
     }
 
+    @Binding(value = "A comma separated list of domestic policies")
+    public Set<DomesticPolicy> DomesticPolicies(String input) {
+        return emumSet(DomesticPolicy.class, input);
+    }
+
     @Binding(value = "A comma separated list of beige reasons for defeating an enemy in war")
     public Set<OrbisMetric> OrbisMetrics(String input) {
         return emumSet(OrbisMetric.class, input);
@@ -229,6 +237,11 @@ public class PWBindings extends BindingHelper {
     @Binding(value = "The status of a nation's loan")
     public DBLoan.Status LoanStatus(String input) {
         return emum(DBLoan.Status.class, input);
+    }
+
+    @Binding(value = "The guild setting category")
+    public GuildSettingCategory GuildSettingCategory(String input) {
+        return emum(GuildSettingCategory.class, input);
     }
 
     @Binding(value = "The success type of an attack")
@@ -354,7 +367,6 @@ public class PWBindings extends BindingHelper {
             "Use `*` as the filter to match all nations.\n" +
             "Only alliance members can be given role")
     public Map<NationFilter, Role> conditionalRole(@Me GuildDB db, String input, @Default @Me User author, @Default @Me DBNation nation) {
-        System.out.println("Parse conditional roles " + input);
         Map<NationFilter, Role> filterToRole = new LinkedHashMap<>();
         for (String line : input.split("\n")) {
             int index = line.lastIndexOf(":");
@@ -459,11 +471,18 @@ public class PWBindings extends BindingHelper {
         if (input.contains("city/id=")) {
             cityId = Integer.parseInt(input.split("=")[1]);
             DBCity cityEntry = Locutus.imp().getNationDB().getCitiesV3ByCityId(cityId);
-            if (cityEntry == null) throw new IllegalArgumentException("No city found in cache with id " + cityId + " (expecting city id or url)");
+            if (cityEntry == null) {
+                final int finalCityId = cityId;
+                cityEntry = Locutus.imp().returnEventsAsync(f -> Locutus.imp().getNationDB().getCitiesV3ByCityId(finalCityId, true, f));
+                if (cityEntry == null) {
+                    throw new IllegalArgumentException("No city found in cache with id " + cityId + " (expecting city id or url)");
+                }
+            }
             int nationId = cityEntry.getNationId();
             DBNation nation2 = DBNation.getById(nationId);
             if (nation2 != null) nation = nation2;
             build = cityEntry.toJavaCity(nation == null ? f -> false : nation::hasProject).toCityBuild();
+            build.setCity_id(cityEntry.getId());
         }
         if (json != null && !json.isBlank()) {
             for (Building building : Buildings.values()) {
@@ -502,7 +521,8 @@ public class PWBindings extends BindingHelper {
     }
 
     @Binding(examples = ("#grant #city=1"), value = "A DepositType optionally with a value and a city tag\n" +
-            "See: <https://github.com/xdnw/locutus/wiki/deposits#transfer-notes>")
+            "See: <https://github.com/xdnw/locutus/wiki/deposits#transfer-notes>",
+    webType = "DepositType")
     public static DepositType.DepositTypeInfo DepositTypeInfo(String input) {
         DepositType type = null;
         long value = 0;
@@ -595,11 +615,11 @@ public class PWBindings extends BindingHelper {
     }
 
     public static NationOrAlliance nationOrAlliance(String input) {
-        return nationOrAlliance(null, input);
+        return nationOrAlliance(input, null);
     }
 
     @Binding(value = "A nation or alliance name, url or id. Prefix with `AA:` or `nation:` to avoid ambiguity if there exists both by the same name or id", examples = {"Borg", "https://politicsandwar.com/alliance/id=1234", "aa:1234"})
-    public static NationOrAlliance nationOrAlliance(ParameterData data, String input) {
+    public static NationOrAlliance nationOrAlliance(String input, @Default ParameterData data) {
         return nationOrAlliance(data, input, false);
     }
 
@@ -651,16 +671,6 @@ public class PWBindings extends BindingHelper {
         return Locutus.imp().getCommandManager().getV2().getAlliancePlaceholders();
     }
 
-    @Binding(examples = "{nation}", value = "See: <https://github.com/xdnw/locutus/wiki/nation_placeholders>")
-    public static NationPlaceholder placeholder(ValueStore store, PermissionHandler permisser, String input) {
-        CommandManager2 v2 = Locutus.imp().getCommandManager().getV2();
-        NationPlaceholders placeholders = v2.getNationPlaceholders();
-        ParametricCallable ph = placeholders.get(input);
-        ph.validatePermissions(store, permisser);
-        TypedFunction<DBNation, ?> entry = placeholders.formatRecursively(store, input, null, 0, true);
-        return new SimpleNationPlaceholder(ph.getPrimaryCommandId(), entry.getType(), entry);
-    }
-
     @Binding(examples = {"25/25"}, value = "A tax rate in the form of `money/rss`")
     public TaxRate taxRate(String input) {
         if (!input.contains("/")) throw new IllegalArgumentException("Tax rate must be in the form: 0/0");
@@ -671,20 +681,26 @@ public class PWBindings extends BindingHelper {
     }
 
     public static NationOrAllianceOrGuildOrTaxid nationOrAllianceOrGuildOrTaxId(String input) {
-        return nationOrAllianceOrGuildOrTaxId(null, input);
+        return nationOrAllianceOrGuildOrTaxId(input, null, null);
     }
 
     @Binding(examples = {"Borg", "alliance/id=7452", "647252780817448972", "tax_id=1234"}, value = "A nation or alliance name, url or id, or a guild id, or a tax id or url")
-    public static NationOrAllianceOrGuildOrTaxid nationOrAllianceOrGuildOrTaxId(ParameterData data, String input) {
-        return nationOrAllianceOrGuildOrTaxId(data, input, true);
+    public static NationOrAllianceOrGuildOrTaxid nationOrAllianceOrGuildOrTaxId(String input, @Default ParameterData data, @Default @Me GuildDB db) {
+        return nationOrAllianceOrGuildOrTaxId(input, true, data, db);
     }
 
     public static NationOrAllianceOrGuildOrTaxid nationOrAllianceOrGuildOrTaxId(String input, boolean includeTaxId) {
-        return nationOrAllianceOrGuildOrTaxId(null, input, includeTaxId);
+        return nationOrAllianceOrGuildOrTaxId(input, includeTaxId, null, null);
     }
-    public static NationOrAllianceOrGuildOrTaxid nationOrAllianceOrGuildOrTaxId(ParameterData data, String input, boolean includeTaxId) {
+    public static NationOrAllianceOrGuildOrTaxid nationOrAllianceOrGuildOrTaxId(String input, boolean includeTaxId, @Default ParameterData data, @Default @Me GuildDB selfDb) {
+        if (data != null && input.equals("*")) {
+            if (data.getAnnotation(StarIsGuild.class) != null && selfDb != null) {
+                return selfDb;
+            }
+        }
+        boolean allowDeleted = data != null && data.getAnnotation(AllowDeleted.class) != null;
         try {
-            return nationOrAlliance(data, input);
+            return nationOrAlliance(data, input, allowDeleted);
         } catch (IllegalArgumentException ignore) {
             if (includeTaxId && !input.startsWith("#") && input.contains("tax_id")) {
                 int taxId = PW.parseTaxId(input);
@@ -723,12 +739,12 @@ public class PWBindings extends BindingHelper {
     }
 
     public static NationOrAllianceOrGuild nationOrAllianceOrGuild(String input) {
-        return nationOrAllianceOrGuild(null, input);
+        return nationOrAllianceOrGuild(input, null, null);
     }
 
     @Binding(examples = {"Borg", "alliance/id=7452", "647252780817448972"}, value = "A nation or alliance name, url or id, or a guild id")
-    public static NationOrAllianceOrGuild nationOrAllianceOrGuild(ParameterData data, String input) {
-        return (NationOrAllianceOrGuild) nationOrAllianceOrGuildOrTaxId(data, input, false);
+    public static NationOrAllianceOrGuild nationOrAllianceOrGuild(String input, @Default ParameterData data, @Default @Me GuildDB db) {
+        return (NationOrAllianceOrGuild) nationOrAllianceOrGuildOrTaxId(input, false, data, db);
     }
 
     public static DBAlliance alliance(String input) {
@@ -827,23 +843,25 @@ public class PWBindings extends BindingHelper {
     public static Set<DBNation> nations(ParameterData data, @Default @Me Guild guild, String input, boolean forceAllowDeleted, @Default @Me User user, @Default @Me DBNation nation) {
         Set<DBNation> nations = DiscordUtil.parseNations(guild, user, nation, input, true, forceAllowDeleted || (data != null && data.getAnnotation(AllowDeleted.class) != null));
         if (nations.isEmpty() && (data == null || data.getAnnotation(AllowEmpty.class) == null)) {
-            System.out.println("Data " + data);
             throw new IllegalArgumentException("No nations found matching: `" + input + "`");
         }
         return nations;
     }
 
-    @Binding(examples = "borg,AA:Cataclysm,#position>1", value = "A comma separated list of nations, alliances and filters")
+    @Binding(examples = "borg,AA:Cataclysm,#position>1", value = "A comma separated list of nations, alliances and filters",
+            webType = "DBNation")
     public static NationList nationList(ParameterData data, @Default @Me Guild guild, String input, @Default @Me User author, @Default @Me DBNation me) {
         return new SimpleNationList(nations(data, guild, input, author, me)).setFilter(input);
     }
 
-    @Binding(examples = "#position>1,#cities<=5", value = "A comma separated list of filters (can include nations and alliances)")
+    @Binding(examples = "#position>1,#cities<=5", value = "A comma separated list of filters (can include nations and alliances)",
+    webType = "Predicate<DBNation>")
     public NationFilter nationFilter(@Default @Me User author, @Default @Me DBNation nation, @Default @Me Guild guild, String input) {
         return new NationFilterString(input, guild, author, nation);
     }
 
-    @Binding(examples = "score,soldiers", value = "A comma separated list of numeric nation attributes")
+    @Binding(examples = "score,soldiers", value = "A comma separated list of numeric nation attributes",
+    webType = "Set<TypedFunction<DBNation, Double>>")
     public Set<NationAttributeDouble> nationMetricDoubles(ValueStore store, String input) {
         Set<NationAttributeDouble> metrics = new LinkedHashSet<>();
         for (String arg : StringMan.split(input, ',')) {
@@ -1046,7 +1064,7 @@ public class PWBindings extends BindingHelper {
     }
 
     @Binding(examples = {"aluminum", "money", "`*`", "manu", "raws", "!food"}, value = "A comma separated list of resource types")
-    public static List<ResourceType> rssTypes(String input) {
+    public static Set<ResourceType> rssTypes(String input) {
         Set<ResourceType> types = new LinkedHashSet<>();
         for (String arg : input.split(",")) {
             boolean remove = arg.startsWith("!");
@@ -1073,7 +1091,7 @@ public class PWBindings extends BindingHelper {
             if (remove) types.removeAll(toAddOrRemove);
             else types.addAll(toAddOrRemove);
         }
-        return new ArrayList<>(types);
+        return new LinkedHashSet<>(types);
     }
 
     @AllianceDepositLimit
@@ -1130,7 +1148,7 @@ public class PWBindings extends BindingHelper {
             throw new IllegalStateException("No user provided in command locals");
         }
         DBNation nation = DiscordUtil.getNation(user);
-        if (nation == null) throw new IllegalArgumentException("Please use " + CM.register.cmd.toSlashMention() + "");
+        if (nation == null) throw new IllegalStateException("Please use " + CM.register.cmd.toSlashMention());
         return nation;
     }
 
@@ -1277,7 +1295,7 @@ public class PWBindings extends BindingHelper {
     @Binding(examples = "647252780817448972", value = "A discord guild id. See: <https://en.wikipedia.org/wiki/Template:Discord_server#Getting_Guild_ID>")
     public static GuildDB guild(long guildId) {
         GuildDB guild = Locutus.imp().getGuildDB(guildId);
-        if (guild == null) throw new IllegalArgumentException("No guild found for: " + guildId);
+        if (guild == null) throw new IllegalStateException("No guild found for: " + guildId);
         return guild;
     }
 
@@ -1331,7 +1349,9 @@ public class PWBindings extends BindingHelper {
         return emum(Rank.class, rank);
     }
 
-    @Binding(value = "An in-game position")
+    @Binding(value = "An in-game position\n" +
+            "When there is overlap from multiple alliances registered to the guild, the alliance id must be specified\n" +
+    "In the form: `<alliance>:<position>` such as `1234:Member`")
     public static DBAlliancePosition position(@Me GuildDB db, @Default @Me DBNation nation, String name) {
         AllianceList alliances = db.getAllianceList();
         if (alliances == null || alliances.isEmpty()) throw new IllegalArgumentException("No alliances are set. See: " + CM.settings.info.cmd.toSlashMention() + " with key " + GuildKey.ALLIANCE_ID.name());
@@ -1417,8 +1437,8 @@ public class PWBindings extends BindingHelper {
     }
 
     @Binding(value = "Math comparison operation")
-    public Operation op(String input) {
-        return emum(Operation.class, input);
+    public MathOperation op(String input) {
+        return emum(MathOperation.class, input);
     }
 
     @Binding(value = "Spy safety level")
@@ -1512,7 +1532,8 @@ public class PWBindings extends BindingHelper {
 
     @Binding(value = "A completed nation attribute that accepts no arguments and returns a number\n" +
             "To get the attribute for an attribute with arguments, you must provide a value in brackets\n" +
-            "See: <https://github.com/xdnw/locutus/wiki/nation_placeholders>", examples = {"score", "ships", "land", "getCitiesSince(5d)"})
+            "See: <https://github.com/xdnw/locutus/wiki/nation_placeholders>", examples = {"score", "ships", "land", "getCitiesSince(5d)"},
+    webType = "TypedFunction<DBNation,Double>")
     public NationAttributeDouble nationMetricDouble(ValueStore store, String input) {
         NationPlaceholders placeholders = Locutus.imp().getCommandManager().getV2().getNationPlaceholders();
         NationAttributeDouble metric = placeholders.getMetricDouble(store, input);
@@ -1564,7 +1585,7 @@ public class PWBindings extends BindingHelper {
         if (allianceList == null) {
             throw new IllegalArgumentException("No alliance registered. See: " + GuildKey.ALLIANCE_ID.getCommandMention());
         }
-        Map<Integer, TaxBracket> brackets = allianceList.getTaxBrackets(true);
+        Map<Integer, TaxBracket> brackets = allianceList.getTaxBrackets(TimeUnit.MINUTES.toMillis(1));
         if (input.matches("[0-9]+/[0-9]+")) {
             String[] split = input.split("/");
             int moneyRate = Integer.parseInt(split[0]);
@@ -1580,7 +1601,7 @@ public class PWBindings extends BindingHelper {
         }
         TaxBracket bracket = brackets.get(taxId);
         if (bracket != null) return bracket;
-        throw new IllegalArgumentException("Bracket " + taxId + " not found for alliance: " + StringMan.getString(db.getAllianceIds()));
+        throw new IllegalArgumentException("Bracket " + taxId + " not found for alliance: " + StringMan.getString(db.getAllianceIds()) + ". If the bracket was just created, please try again in a minute.");
     }
 
     @Binding
@@ -1657,4 +1678,13 @@ public class PWBindings extends BindingHelper {
         return emum(AllianceMetricMode.class, mode);
     }
 
+    @Binding
+    public NationMeta meta(String input) {
+        return emum(NationMeta.class, input);
+    }
+
+    @Binding
+    public WarCostByDayMode WarCostByDayMode(String input) {
+        return emum(WarCostByDayMode.class, input);
+    }
 }

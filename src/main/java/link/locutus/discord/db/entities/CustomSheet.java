@@ -55,7 +55,7 @@ public class CustomSheet {
         response.append("**Name:** `" + getName() + "`\n");
         response.append("**URL:** <" + getUrl() + ">\n");
         if (tabs.isEmpty()) {
-            response.append("**Tabs:** Add one with TODO CM REF\n");
+            response.append("**Tabs:** None\n");
         } else {
             response.append("**Tabs:**\n");
             for (Map.Entry<String, Map.Entry<SelectionAlias, SheetTemplate>> entry : tabs.entrySet()) {
@@ -125,7 +125,6 @@ public class CustomSheet {
                     List<Object> header = new ArrayList<>(columns);
                     for (int i = 0; i < header.size(); i++) {
                         if (header.get(i) instanceof String str && str.startsWith("=")) {
-                            // add ' prefix when starts
                             header.set(i, "'" + str);
                         }
                     }
@@ -156,11 +155,12 @@ public class CustomSheet {
                             }
                             try {
                                 String value1 = function.apply(o);
-                                header.set(i, value1);
+                                header.set(i, value1 == null ? "" : value1);
                             } catch (Exception e) {
                                 String column = columns.get(i);
                                 String elemStr = ph.getName(o);
                                 errors.add("[Tab: `" + tabName + "`,Column:`" + column + "`,Elem:`" + elemStr + "`] " + StringMan.stripApiKey(e.getMessage()));
+                                header.set(i, "");
                             }
                         }
                         sheet.addRow(tabName, header);

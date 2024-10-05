@@ -1,20 +1,25 @@
 package link.locutus.discord.apiv3;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier;
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
+import com.fasterxml.jackson.databind.module.SimpleModule;
+import com.fasterxml.jackson.databind.type.CollectionType;
+import com.fasterxml.jackson.databind.type.TypeFactory;
+import com.google.common.base.CaseFormat;
+import com.google.gson.*;
 import com.google.gson.reflect.TypeToken;
-import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import link.locutus.discord.Locutus;
-import link.locutus.discord.RequestTracker;
+import link.locutus.discord.Logg;
 import link.locutus.discord.apiv1.enums.Rank;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.apiv1.enums.TreatyType;
 import link.locutus.discord.apiv3.enums.AlliancePermission;
 import link.locutus.discord.config.Settings;
-import link.locutus.discord.db.DiscordDB;
-import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.pnw.NationOrAlliance;
 import link.locutus.discord.util.*;
 import link.locutus.discord.util.StringMan;
@@ -23,10 +28,8 @@ import com.politicsandwar.graphql.model.*;
 import link.locutus.discord.apiv1.core.ApiKeyPool;
 import graphql.GraphQLException;
 import link.locutus.discord.util.io.PagePriority;
-import net.dv8tion.jda.api.entities.channel.concrete.Category;
-import net.dv8tion.jda.api.requests.ErrorResponse;
+import link.locutus.discord.web.jooby.JteUtil;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -37,17 +40,16 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.IOException;
+import java.io.Serializable;
 import java.net.URI;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.sql.SQLException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public class PoliticsAndWarV3 {
@@ -70,20 +72,28 @@ public class PoliticsAndWarV3 {
     public static int BANS_PER_PAGE = 500;
 
     private final String endpoint;
+    private final String snapshotUrl;
     private final RestTemplate restTemplate;
     private final ObjectMapper jacksonObjectMapper;
     private final ApiKeyPool pool;
 
     public PoliticsAndWarV3(String url, ApiKeyPool pool) {
-        this.endpoint = url;
+        this.endpoint = url + "/graphql";
+        this.snapshotUrl = url + "/subscriptions/v1/snapshot/";
         this.restTemplate = new RestTemplate();
         this.pool = pool;
 
         this.jacksonObjectMapper = Jackson2ObjectMapperBuilder.json().simpleDateFormat("yyyy-MM-dd").build();
+        jacksonObjectMapper.configure(DeserializationFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS,true);
+        jacksonObjectMapper.configure(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY, true);
+        SimpleModule module = new SimpleModule();
+        // Fix for snapshots returning Object instead of Array of CityInfraDamage
+        module.addDeserializer(CityInfraDamage.class, (JsonDeserializer<CityInfraDamage>) (Object) new CityInfraDamageDeserializer());
+        jacksonObjectMapper.registerModule(module);
     }
 
     public PoliticsAndWarV3(ApiKeyPool pool) {
-        this("https://api" + (Settings.INSTANCE.TEST ? "-test" : "") + ".politicsandwar.com/graphql", pool);
+        this("https://api" + (Settings.INSTANCE.TEST ? "-test" : "") + ".politicsandwar.com", pool);
     }
 
     public ApiKeyPool getPool() {
@@ -92,6 +102,13 @@ public class PoliticsAndWarV3 {
 
     public String getUrl(String key) {
         return endpoint + "?api_key=" + key;
+    }
+
+    public String getSnapshotUrl(Class<?> type, String key) {
+        String endpointName;
+        endpointName = CaseFormat.UPPER_CAMEL.to(CaseFormat.LOWER_UNDERSCORE, type.getSimpleName());
+        if (endpointName.equalsIgnoreCase("war_attack")) endpointName = "warattack";
+        return snapshotUrl + endpointName + "?api_key=" + key;
     }
 
     public void throwInvalid(AlliancePermission alliancePermission, String message) {
@@ -114,20 +131,23 @@ public class PoliticsAndWarV3 {
     }
 
     private static class RateLimit {
-        public int limit;
-        public int intervalMs;
-        public long resetAfterMs;
-        public int remaining;
-        public long resetMs;
+        // Amount of requests allowed per interval
+        public volatile int limit;
+        // The interval in milliseconds (typically 60_000)
+        public volatile int intervalMs;
+        // The number of ms until the ratelimit resets (unused)
+        public volatile long resetAfterMs_unused;
+        // The remaining number of requests this interval
+        public volatile int remaining;
+        // the unix epoch time in milliseconds when the ratelimit resets
+        public volatile long resetMs;
 
         public void reset(long now) {
             if (now > resetMs) {
                 remaining = limit;
-
                 long remainder = (now - resetMs) % intervalMs;
-
-                resetAfterMs = intervalMs - remainder;
-                resetMs = now + resetAfterMs;
+                resetAfterMs_unused = intervalMs - remainder;
+                resetMs = now + resetAfterMs_unused;
             }
         }
     }
@@ -139,30 +159,97 @@ public class PoliticsAndWarV3 {
         return requestTracker;
     }
 
-    public <T> T readTemplate(PagePriority priority, boolean pagination, GraphQLRequest graphQLRequest, Class<T> resultBody) {
-        int priorityId = priority.ordinal() + (pagination ? 1 : 0);
+    public <T extends Serializable> List<T> readSnapshot(PagePriority priority, Class<T> type) {
+        handleRateLimit();
+        String errorMsg;
+        while (true) {
+            errorMsg = null;
+            ApiKeyPool.ApiKey pair = pool.getNextApiKey();
+            String url = getSnapshotUrl(type, pair.getKey());
+            String body = null;
+            try {
+                body = FileUtil.readStringFromURL(priority, url);
+                // parse json
+                if (body.contains("\"error\":")) {
+                    JsonObject obj = JsonParser.parseString(body).getAsJsonObject();
+                    String errorRaw = obj.get("error").getAsString();
+                    if (errorRaw.equalsIgnoreCase("rate-limited")) {
+                        long sleepMs = 30_500;
+
+                        JsonObject duration = obj.getAsJsonObject("duration");
+                        if (duration != null && duration.has("nanos")) {
+                            long nanos = duration.get("nanos").getAsLong();
+                            sleepMs = Math.min(60_000, (nanos + 999_999) / 1_000_000);
+                        }
+
+                        setRateLimit(sleepMs);
+                        Thread.sleep(sleepMs);
+                        continue;
+                    } else {
+                        errorMsg = errorRaw;
+                    }
+                }
+                if (errorMsg == null) {
+                    return jacksonObjectMapper.readerForListOf(type).readValue(body);
+                }
+            } catch (IOException e) {
+                errorMsg = e.getMessage();
+                errorMsg = errorMsg == null ? "" : StringMan.stripApiKey(errorMsg);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            if (body != null && !errorMsg.contains("rate-limited") && !errorMsg.contains("database error") && !errorMsg.contains("couldn't find api key")) {
+                Logg.text("Unknown error with APIv3 Snapshot response: " + errorMsg + "\n\n---START BODY\n\n" + body + "\n\n---END BODY---\n\n");
+            }
+            rethrow(new IllegalArgumentException(StringUtils.replaceIgnoreCase(errorMsg, pair.getKey(), "XXX")), pair, true);
+        }
+    }
+
+    private void setRateLimit(long timeMs) {
+        synchronized (rateLimitGlobal) {
+            if (rateLimitGlobal.intervalMs == 0) {
+                rateLimitGlobal.intervalMs = 60_000;
+            }
+            if (rateLimitGlobal.limit == 0) {
+                rateLimitGlobal.limit = 60;
+            }
+            long now = System.currentTimeMillis();
+            rateLimitGlobal.resetAfterMs_unused = timeMs;
+            rateLimitGlobal.remaining = 0;
+            rateLimitGlobal.resetMs = now + timeMs;
+            rateLimitGlobal.limit = 0;
+        }
+    }
+
+    private void handleRateLimit() {
         if (rateLimitGlobal.intervalMs != 0) {
             synchronized (rateLimitGlobal) {
                 long now = System.currentTimeMillis();
                 rateLimitGlobal.reset(now);
-
                 if (rateLimitGlobal.remaining <= 0) {
                     long sleepMs = rateLimitGlobal.resetMs - now;
                     if (sleepMs > 0) {
                         try {
                             sleepMs = Math.min(sleepMs, 60 * 1000);
-                            System.out.println("Hit rate limit ( " + rateLimitGlobal.limit + " | " + sleepMs + " )");
+                            Logg.text("Pausing API requests to avoid being rate limited:\n" +
+                                    "- Limit: " + rateLimitGlobal.limit + "\n" +
+                                    "- Retry After: " + sleepMs + "ms");
                             Thread.sleep(sleepMs + 1000);
                         } catch (InterruptedException e) {
                             throw new RuntimeException(e);
                         }
                     }
+                    now = System.currentTimeMillis();
                 }
-                rateLimitGlobal.reset(System.currentTimeMillis());
+                rateLimitGlobal.reset(now);
                 rateLimitGlobal.remaining--;
             }
         }
+    }
 
+    public <T> T readTemplate(PagePriority priority, boolean pagination, GraphQLRequest graphQLRequest, Class<T> resultBody) {
+        int priorityId = priority.ordinal() + (pagination ? 1 : 0);
+        handleRateLimit();
         {
             String queryStr = graphQLRequest.toQueryString().split("\\{")[0];
             String queryFull = graphQLRequest.toQueryString();
@@ -185,7 +272,6 @@ public class PoliticsAndWarV3 {
             String url = getUrl(pair.getKey());
             try {
                 restTemplate.acceptHeaderRequestCallback(String.class);
-//
                 HttpEntity<String> entity = httpEntity(graphQLRequest, pair.getKey(), pair.getBotKey());
 
                 URI uri = URI.create(url);
@@ -199,10 +285,11 @@ public class PoliticsAndWarV3 {
                 JsonNode json = jacksonObjectMapper.readTree(body);
 
                 if (json.has("errors")) {
-                    System.out.println("Body " + exchange.getBody());
-                    System.out.println("\n\n------\n");
-                    System.out.println(graphQLRequest.toQueryString() + " | " + graphQLRequest.getRequest());
-                    System.out.println("\n\n------\n");
+                    StringBuilder printToConsole = new StringBuilder("[GraphQL][" + priority + "] Error with " + graphQLRequest.getRequest());
+                    printToConsole.append("\n\n---START BODY---\n");
+                    printToConsole.append(body);
+                    printToConsole.append("\n\n---END BODY---\n");
+                    Logg.text(printToConsole.toString());
                     JsonNode errors = json.get("errors");
                     List<String> errorMessages = new ObjectArrayList<>();
                     for (JsonNode error : errors) {
@@ -212,30 +299,30 @@ public class PoliticsAndWarV3 {
                     }
                     String message = errorMessages.isEmpty() ? errors.toString() : StringMan.join(errorMessages, "\n");
                     message = StringMan.stripApiKey(message);
-                    rethrow(new IllegalArgumentException(message.replace(pair.getKey(), "XXX")), pair, true);
+                    rethrow(new IllegalArgumentException(StringUtils.replaceIgnoreCase(message, pair.getKey(), "XXX")), pair, true);
                 }
 
                 result = jacksonObjectMapper.readValue(body, resultBody);
                 break;
             } catch (HttpClientErrorException.TooManyRequests e) {
                 try {
-                    System.out.println("Status " + e.getStatusText());
                     HttpHeaders headers = e.getResponseHeaders();
                     // Retry-After
-                    if (headers != null) {
-                        String retryAfter = headers.getFirst("Retry-After");
-                        System.out.println("Retry-After " + retryAfter);
-                    }
                     long timeout = (60000L);
-                    System.out.println(e.getMessage());
-                    System.out.println("Hit rate limit 2 " + timeout + "ms");
+                    String retryAfter = null;
+                    if (headers != null) {
+                        retryAfter = headers.getFirst("Retry-After");
+                        timeout = retryAfter != null ? Math.min(60, Long.parseLong(retryAfter)) * 1000L : timeout;
+                    }
+                    Logg.text("Rate Limited On:\n" +
+                            "- Request: " + graphQLRequest.getRequest() + "\n" +
+                            "- Retry After: " + retryAfter);
                     Thread.sleep(timeout);
                 } catch (InterruptedException ex) {
                     throw new RuntimeException(ex);
                 }
                 backOff++;
             } catch (HttpClientErrorException.Unauthorized e) {
-                System.out.println("Unauthorized ");
                 try {
                     if (badKey++ >= 4 || pool.size() <= 1) {
                         e.printStackTrace();
@@ -272,7 +359,7 @@ public class PoliticsAndWarV3 {
                     if (remove) pool.removeKey(pair);
                     continue;
                 }
-                System.out.println("Error " + graphQLRequest.toHttpJsonBody() + "\n- " + e.getMessage());
+                Logg.text("Error " + graphQLRequest.toHttpJsonBody() + "\n\n---START BODY---\n\n" + e.getMessage() + "\n\n---END BODY---\n\n");
                 rethrow(e, pair,false);
                 throw e;
             }
@@ -280,7 +367,7 @@ public class PoliticsAndWarV3 {
         HttpHeaders header = exchange.getHeaders();
         synchronized (rateLimitGlobal) {
             if (header.containsKey("X-RateLimit-Reset-After")) {
-                rateLimitGlobal.resetAfterMs = Long.parseLong(Objects.requireNonNull(header.get("X-RateLimit-Reset-After")).get(0)) * 1000L;
+                rateLimitGlobal.resetAfterMs_unused = Long.parseLong(Objects.requireNonNull(header.get("X-RateLimit-Reset-After")).get(0)) * 1000L;
             }
             if (header.containsKey("X-RateLimit-Limit")) {
                 rateLimitGlobal.limit = Integer.parseInt(Objects.requireNonNull(header.get("X-RateLimit-Limit")).get(0));
@@ -399,7 +486,6 @@ public class PoliticsAndWarV3 {
                     break pageLoop;
                 }
                 if (result.hasErrors()) {
-                    System.out.println("Has error ");
                     int maxBehavior = 0;
                     List<GraphQLError> errors = result.getErrors();
                     for (GraphQLError error : errors) {
@@ -414,7 +500,10 @@ public class PoliticsAndWarV3 {
                         case RETRY:
                             try {
                                 long timeout = Math.min(60000, (long) (1000 + Math.pow(i * 1000, 2)));
-                                System.out.println("Hit rate limit 3 " + timeout + "ms");
+                                Logg.text("Handle Rate Limit (backoff):\n" +
+                                        "- Request: " + graphQLRequest.getRequest() + "\n" +
+                                        "- Retry After: " + timeout + "ms" +
+                                        "\n\n---\n\n" + errors + "\n\n---\n\n");
                                 Thread.sleep(timeout);
                             } catch (InterruptedException e) {
                                 e.printStackTrace();
@@ -984,7 +1073,6 @@ public class PoliticsAndWarV3 {
             }
         }, f -> ErrorResponse.THROW, f -> true);
         if (alliance == null || alliance.size() != 1) {
-            System.out.println("No results");
             return null;
         }
         return alliance.get(0).getBankrecs();
@@ -1912,8 +2000,8 @@ public class PoliticsAndWarV3 {
         return result.colors();
     }
 
-    public List<Nation> fetchNationActive(List<Integer> ids) {
-        return fetchNations(true, f -> {
+    public List<Nation> fetchNationActive(boolean priority, List<Integer> ids) {
+        return fetchNations(priority, f -> {
             f.setId(ids);
             f.setVmode(false);
         }, new Consumer<NationResponseProjection>() {
@@ -1940,7 +2028,7 @@ public class PoliticsAndWarV3 {
         if (api != null && bot != null && !bot.isEmpty()) {
             headers.set("X-Api-Key", api);
         } else {
-            headers.set("X-Api-Key", Settings.INSTANCE.API_KEY_PRIMARY);
+            headers.set("X-Api-Key", Locutus.loader().getApiKey());
         }
         if (bot != null && !bot.isEmpty()) {
             headers.set("X-Bot-Key", bot);

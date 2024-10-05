@@ -8,25 +8,32 @@ import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.core.ApiKeyPool;
 import link.locutus.discord.apiv3.PoliticsAndWarV3;
 import link.locutus.discord.apiv3.enums.AlliancePermission;
+import link.locutus.discord.commands.account.question.questions.InterviewQuestion;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
 import link.locutus.discord.commands.manager.v2.binding.annotation.*;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Timestamp;
 import link.locutus.discord.commands.manager.v2.binding.bindings.PlaceholderCache;
 import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
+import link.locutus.discord.commands.manager.v2.command.StringMessageBuilder;
+import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
+import link.locutus.discord.commands.manager.v2.impl.discord.binding.DiscordBindings;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.HasApi;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.IsAlliance;
 import link.locutus.discord.commands.manager.v2.impl.discord.permission.RolePermission;
+import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
+import link.locutus.discord.commands.manager.v2.impl.pw.binding.PWBindings;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.NationPlaceholders;
-import link.locutus.discord.commands.rankings.builder.SummedMapRankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.SummedMapRankBuilder;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.*;
 import link.locutus.discord.db.entities.DBAlliance;
 import link.locutus.discord.db.guild.GuildKey;
 import link.locutus.discord.db.guild.SheetKey;
+import link.locutus.discord.gpt.GPTUtil;
 import link.locutus.discord.pnw.AllianceList;
 import link.locutus.discord.pnw.NationList;
 import link.locutus.discord.pnw.PNWUser;
@@ -44,6 +51,9 @@ import link.locutus.discord.util.offshore.test.IAChannel;
 import link.locutus.discord.util.sheet.SpreadSheet;
 import link.locutus.discord.util.task.MailRespondTask;
 import link.locutus.discord.util.task.ia.IACheckup;
+import link.locutus.discord.util.task.mail.Mail;
+import link.locutus.discord.util.task.mail.ReadMailTask;
+import link.locutus.discord.util.task.mail.SearchMailTask;
 import link.locutus.discord.web.jooby.handler.CommandResult;
 import com.google.gson.JsonObject;
 import link.locutus.discord.apiv1.enums.Rank;
@@ -57,6 +67,7 @@ import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.exceptions.HierarchyException;
+import net.dv8tion.jda.api.exceptions.PermissionException;
 import org.apache.commons.collections4.map.PassiveExpiringMap;
 import org.json.JSONObject;
 
@@ -64,27 +75,416 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.time.OffsetDateTime;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public class IACommands {
+    @Command(desc = "Rename channels and set their topic (if empty) in a category to match the nation registered to the user added")
+    @RolePermission(Roles.INTERNAL_AFFAIRS_STAFF)
+    public String renameInterviewChannels(@Me GuildDB db, @Me Guild guild, @Me IMessageIO io, @Me JSONObject command,
+                                          Set<Category> categories,
+                                          @Switch("m") boolean allow_non_members,
+                                          @Switch("v") boolean allow_vm,
+                                          @Switch("n") Set<DBNation> list_missing,
+                                          @Switch("f") boolean force) {
+        for (Category category : categories) {
+            if (!category.getGuild().equals(guild)) throw new IllegalArgumentException("Category " + category.getName() + " is not in this guild");
+        }
+        Map<TextChannel, String> errors = new LinkedHashMap<>();
+        Map<TextChannel, String> warnings = new LinkedHashMap<>();
+        Map<DBNation, Set<TextChannel>> nationChannels = new HashMap<>();
+        Map<User, Set<TextChannel>> userChannels = new HashMap<>();
+        List<String> changes = new ArrayList<>();
+        for (TextChannel channel : categories.stream().flatMap(f -> f.getTextChannels().stream()).collect(Collectors.toSet())) {
+            List<PermissionOverride> overrides = channel.getMemberPermissionOverrides();
+            List<Member> members = overrides.stream().map(PermissionOverride::getMember).filter(Objects::nonNull).filter(f -> !f.getUser().isBot()).toList();
+            if (members.isEmpty()) {
+                errors.put(channel, "No users added to channel");
+                continue;
+            }
+            if (members.size() > 1) {
+                errors.put(channel, "Multiple users added to channel");
+                continue;
+            }
+            Member member = members.get(0);
+            userChannels.computeIfAbsent(member.getUser(), f -> new HashSet<>()).add(channel);
+            if (!channel.canTalk(member)) {
+                errors.put(channel, "User does not have permission to talk in channel: `" + DiscordUtil.getFullUsername(member.getUser()) + "` | `" + member.getId() + "`");
+                continue;
+            }
+            DBNation nation = DiscordUtil.getNation(member.getIdLong());
+            if (nation == null) {
+                errors.put(channel, "User is not registered to a nation: `" + DiscordUtil.getFullUsername(member.getUser()) + "` | `" + member.getId() + "`");
+                continue;
+            }
+            nationChannels.computeIfAbsent(nation, f -> new HashSet<>()).add(channel);
+            if (!allow_non_members && !db.isAllianceId(nation.getAlliance_id())) {
+                warnings.put(channel, "Nation is not in the alliance: " + nation.getMarkdownUrl() + " (ignore with `allow_non_members: True`");
+            } else if (!allow_vm && nation.getVm_turns() > 0) {
+                warnings.put(channel, "Nation is a VM: " + nation.getMarkdownUrl() + " (ignore with `allow_vm: True`");
+            }
+            String topic = channel.getTopic();
+            if (topic == null || channel.getTopic().isEmpty()) {
+                String newTopic = nation.getUrl();
+                RateLimitUtil.queue(channel.getManager().setTopic(newTopic));
+            }
+            String newName = nation.getName() + "-" + nation.getId();
+            if (channel.getName().replace(" ", "-").equalsIgnoreCase(newName.replace(" ", "-"))) continue;
+            changes.add(channel.getAsMention() + ": " + channel.getName() + " -> " + nation.getName() + "-" + nation.getId());
+            if (force) {
+                try {
+                    RateLimitUtil.queue(channel.getManager().setName(newName));
+                } catch (PermissionException e) {
+                    errors.put(channel, "Error renaming channel: " + e.getMessage());
+                }
+            }
+        }
+        // add duplicates to errors
+        nationChannels.entrySet().stream().filter(f -> f.getValue().size() > 1).forEach(f -> errors.putIfAbsent(f.getValue().iterator().next(), "Nation has multiple channels"));
+        userChannels.entrySet().stream().filter(f -> f.getValue().size() > 1).forEach(f -> errors.putIfAbsent(f.getValue().iterator().next(), "User has multiple channels"));
+
+        StringBuilder errorsStr = new StringBuilder();
+        if (!errors.isEmpty()) {
+            errorsStr.append("channnel_name\tchannel_id\terror\n");
+            for (Map.Entry<TextChannel, String> entry : errors.entrySet()) {
+                TextChannel channel = entry.getKey();
+                errorsStr.append(channel.getName() + "\t" + channel.getId() + "\t" + entry.getValue() + "\n");
+            }
+        }
+        StringBuilder warningsStr = new StringBuilder();
+        if (!warnings.isEmpty()) {
+            warningsStr.append("channnel_name\tchannel_id\twarning\n");
+            for (Map.Entry<TextChannel, String> entry : warnings.entrySet()) {
+                TextChannel channel = entry.getKey();
+                warningsStr.append(channel.getName() + "\t" + channel.getId() + "\t" + entry.getValue() + "\n");
+            }
+        }
+        IMessageBuilder msg = io.create();
+        StringBuilder append = new StringBuilder();
+        if (!errors.isEmpty()) {
+            append.append("Errors, see attached `errors.txt` for details");
+            msg.file("errors.txt", errorsStr.toString());
+        }
+        if (!warnings.isEmpty()) {
+            append.append("Warnings, see attached `warnings.txt` for details");
+            msg.file("warnings.txt", warningsStr.toString());
+        }
+
+        if (list_missing != null) {
+            Set<DBNation> missing = new LinkedHashSet<>();
+            for (DBNation nation : list_missing) {
+                if (!nationChannels.containsKey(nation)) {
+                    missing.add(nation);
+                }
+            }
+            if (!missing.isEmpty()) {
+                List<String> missingRows = new ArrayList<>();
+                missingRows.add("nation_id\tnation_name\tdiscord\turl");
+                for (DBNation nation : missing) {
+                    String userName = nation.getUserDiscriminator();
+                    missingRows.add(nation.getId() + "\t" + nation.getName() + "\t" + userName + "\t" + nation.getUrl());
+                }
+                msg.file("missing.txt", StringMan.join(missingRows, "\n"));
+            }
+        }
+
+        if (changes.isEmpty()) {
+            append.append("No changes to be made");
+            msg.append(append.toString()).send();
+            return null;
+        }
+        if (!force) {
+            append.append(changes.size() + " changes.");
+            msg.confirmation("Confirm rename channels", append.toString() + "\n" +
+                    StringMan.join(changes, "\n"), command).send();
+        } else {
+            msg.append(append.toString() + "\n" + StringMan.join(changes, "\n")).send();
+        }
+        return null;
+    }
+
+    @Command(desc = "Sort the channels in a set of categories into new categories based on the category name\n" +
+            "The channels must be in the form `{nation}-{nation_id}`\n" +
+            "Receiving categories must resolve to a nation filter: <https://github.com/xdnw/locutus/wiki/Nation_placeholders>\n" +
+            "Set a category prefix to only send channels to categories starting with a specific word (e.g. `interview-`)\n" +
+            "Set a filter to only sort channels for those nations")
+    @RolePermission(Roles.INTERNAL_AFFAIRS_STAFF)
+    public String sortChannelsName(@Me GuildDB db, @Me Guild guild, @Me User author, @Me DBNation me, @Me IMessageIO io, @Me JSONObject command,
+                                   @Arg("Categories to sort from")
+                                   Set<Category> from,
+                                   @Arg("Category prefix to sort channels into")
+                                   String categoryPrefix,
+                                   @Arg("Optional filter to only sort channels for those nations")
+                                   @Default NationFilter filter,
+                                   @Switch("w") boolean warn_on_filter_fail,
+                                   @Switch("f") boolean force) {
+        for (Category category : from) {
+            if (!category.getGuild().equals(guild)) throw new IllegalArgumentException("Category " + category.getName() + " is not in this guild");
+        }
+        List<String> errors = new ArrayList<>();
+        Map<Category, NationFilter> filters = new HashMap<>();
+
+        String prefixLower = categoryPrefix.toLowerCase(Locale.ROOT);
+        for (Category category : guild.getCategories()) {
+            String name = category.getName();
+            if (name.toLowerCase(Locale.ROOT).startsWith(prefixLower)) {
+                name = name.substring(prefixLower.length());
+                if (name.startsWith("-")) name = name.substring(1);
+                try {
+                    NationFilter nationFilter = new NationFilterString(name, guild, author, me);
+                    filters.put(category, nationFilter);
+                } catch (IllegalArgumentException e) {
+                    errors.add("[" + category.getName() + "] Error Resolving filter " + e.getMessage());
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        if (filters.isEmpty()) {
+            String msg = "No categories found with prefix: `" + categoryPrefix + "` that resolve to a valid category.";
+            if (!errors.isEmpty()) {
+                msg += "\nCategory Name Errors:\n" + StringMan.join(errors, "\n");
+            }
+            throw new IllegalArgumentException(msg);
+        }
+
+        Function<DBNation, Set<Category>> catFunc = nation -> {
+            Set<Category> categories = new HashSet<>();
+            for (Map.Entry<Category, NationFilter> entry : filters.entrySet()) {
+                if (entry.getValue().test(nation)) {
+                    categories.add(entry.getKey());
+                }
+            }
+            return categories.isEmpty() ? null : categories;
+        };
+        IMessageBuilder msg = sortChannels(db, guild, io, command, from, catFunc, filter, warn_on_filter_fail, force);
+        if (!errors.isEmpty()) {
+            msg = msg.append("\nCategory Name Errors:\n" + StringMan.join(errors, "\n"));
+        }
+        msg.send();
+        return null;
+    }
+
+    @Command(desc = "Sort the channels in a set of categories into new categories based on a spreadsheet\n" +
+            "The channels must be in the form `{nation}-{nation_id}`\n" +
+            "The sheet must have columns: (`nation` or `leader`) and `category`\n" +
+            "Set a filter to only sort channels for those nations")
+    @RolePermission(Roles.INTERNAL_AFFAIRS)
+    public String sortChannelsSheet(@Me GuildDB db, @Me Guild guild, @Me IMessageIO io, @Me JSONObject command,
+                                    @Arg("Categories to sort from")
+                                    Set<Category> from,
+                                    SpreadSheet sheet,
+                                    @Default NationFilter filter,
+                                    @Switch("w") boolean warn_on_filter_fail, @Switch("f") boolean force) {
+        sheet.loadValues(null, true);
+        List<Object> nations = sheet.findColumn("nation");
+        List<Object> leaders = sheet.findColumn("leader");
+        List<Object> categories = sheet.findColumn("category");
+        if (nations == null && leaders == null) {
+            throw new IllegalArgumentException("Sheet must have columns: (`nation` or `leader`)");
+        }
+        if (categories == null) {
+            throw new IllegalArgumentException("Sheet must have column: `category`");
+        }
+        List<String> errors = new ArrayList<>();
+        Map<DBNation, Category> categoryMap = new HashMap<>();
+        int max = Math.max(nations == null ? 0 : nations.size(), leaders == null ? 0 : leaders.size());
+        for (int i = 0; i < max; i++) {
+            Object nationObj = nations == null || nations.size() < i ? null : nations.get(i);
+            String nationStr = nationObj == null ? null : nationObj.toString();
+
+            Object leaderObj = leaders == null || leaders.size() < i ? null : leaders.get(i);
+            String leaderStr = leaderObj == null ? null : leaderObj.toString();
+
+            DBNation nation = null;
+            Category category = null;
+            try {
+                if (nationStr != null && !nationStr.isEmpty()) {
+                    nation = PWBindings.nation(null, nationStr);
+                } else if (leaderStr != null && !leaderStr.isEmpty()) {
+                    nation = Locutus.imp().getNationDB().getNationByLeader(leaderStr);
+                    if (nation == null) {
+                        errors.add("[Row:" + (i + 2) + "] Nation Leader not found: `" + leaderStr + "`");
+                    }
+                }
+                Object categoryObj = categories.size() < i ? null : categories.get(i);
+                String categoryStr = categoryObj == null ? null : categoryObj.toString();
+                if (categoryStr != null && !categoryStr.isEmpty()) {
+                    category = DiscordBindings.category(guild, categoryStr, null);
+                }
+            } catch (IllegalArgumentException e) {
+                errors.add("[Row:" + (i + 2) + "] " + e.getMessage());
+            }
+            if (nation != null && category != null) {
+                categoryMap.put(nation, category);
+            }
+        }
+        Function<DBNation, Set<Category>> catFunc = nation -> {
+            Category category = categoryMap.get(nation);
+            if (category == null) {
+                return null;
+            }
+            return Set.of(category);
+        };
+        IMessageBuilder msg = sortChannels(db, guild, io, command, from, catFunc, filter, warn_on_filter_fail, force);
+        if (!errors.isEmpty()) {
+            msg = msg.append("\nSheet Errors:\n" + StringMan.join(errors, "\n"));
+        }
+        msg.send();
+        return null;
+    }
+
+    public static IMessageBuilder sortChannels(@Me GuildDB db, @Me Guild guild, @Me IMessageIO io, @Me JSONObject command, Set<Category> from, Function<DBNation, Set<Category>> newCategory, @Default NationFilter filter, @Switch("w") boolean warn_on_filter_fail, @Switch("f") boolean force) {
+        Set<TextChannel> channels = new LinkedHashSet<>();
+        for (Category category : from) {
+            channels.addAll(category.getTextChannels());
+        }
+
+        Map<TextChannel, String> errors = new LinkedHashMap<>();
+        Map<TextChannel, Set<String>> warnings = new LinkedHashMap<>();
+        List<String> changes = new ArrayList<>();
+        Map<DBNation, Set<TextChannel>> nationChannels = new HashMap<>();
+
+        for (TextChannel channel : channels) {
+            String[] split = channel.getName().split("-");
+            if (split.length < 2) {
+                errors.put(channel, "Invalid channel name: `" + channel.getName() + "` (must be in the form `{nation}-{nation_id}`)");
+                continue;
+            }
+            String idStr = split[split.length - 1];
+            if (!MathMan.isInteger(idStr)) {
+                errors.put(channel, "Invalid nation id: `" + channel.getName() + "` (must be in the form `{nation}-{nation_id}`)");
+                continue;
+            }
+            long id = Long.parseLong(idStr);
+            DBNation nation = DBNation.getById((int) id);
+            if (nation == null) {
+                errors.put(channel, "Nation not found: `" + id + "`");
+                continue;
+            }
+            nationChannels.computeIfAbsent(nation, f -> new HashSet<>()).add(channel);
+            User user = nation.getUser();
+            if (user == null) {
+                warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("Nation " + nation.getMarkdownUrl() + " is not registered with bot: " + CM.register.cmd.toSlashMention());
+            } else {
+                Member member = guild.getMember(user);
+                if (member == null) {
+                    warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("User is not in server: `" + DiscordUtil.getFullUsername(user) + "` | `" + user.getId() + "`");
+                } else if (!channel.canTalk(member)) {
+                    warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("User does not have permission to talk in channel: `" + DiscordUtil.getFullUsername(user) + "` | `" + user.getId() + "`");
+                } else if (!db.hasAlliance()) {
+                    Role memberRole = Roles.MEMBER.toRole(db);
+                    if (memberRole != null) {
+                        if (!member.getRoles().contains(memberRole)) {
+                            warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("User is not a member: `" + DiscordUtil.getFullUsername(user) + "` | `" + user.getId() + "`");
+                        }
+                    }
+                }
+            }
+            if (nation.active_m() > 7200) {
+                warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("Nation " + nation.getMarkdownUrl() + " is inactive: " + TimeUtil.secToTime(TimeUnit.MINUTES, nation.active_m()));
+            }
+            if (db.hasAlliance()) {
+                if (!db.isAllianceId(nation.getAlliance_id())) {
+                    warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("Nation " + nation.getMarkdownUrl() + " is not a member of this alliance: " + db.getAllianceIds());
+                }
+            }
+            if (filter != null && !filter.test(nation)) {
+                if (warn_on_filter_fail) {
+                    warnings.computeIfAbsent(channel, f -> new HashSet<>()).add("Nation " + nation.getMarkdownUrl() + " does not match filter: `" + filter.getFilter() + "`");
+                }
+                continue;
+            }
+
+            Set<Category> allowed = newCategory.apply(nation);
+            if (allowed == null || allowed.contains(channel.getParentCategory()) || allowed.isEmpty()) continue;
+            Category nonMax = null;
+            for (Category cat : allowed) {
+                if (cat.getChannels().size() > 50) {
+                    continue;
+                }
+                nonMax = cat;
+                break;
+            }
+            if (nonMax == null) {
+                errors.put(channel, "Category channel cap reached for " + allowed);
+                continue;
+            } else {
+                Category currCategory = channel.getParentCategory();
+                if (force) {
+                    try {
+                        RateLimitUtil.queue(channel.getManager().setParent(nonMax));
+                    } catch (PermissionException e) {
+                        errors.put(channel, "Error moving " + nonMax.getName() + ": " + e.getMessage());
+                        continue;
+                    }
+                }
+                if (currCategory == null) {
+                    changes.add(channel.getAsMention() + " -> " + nonMax.getName());
+                } else {
+                    changes.add(channel.getAsMention() + ": " + currCategory.getAsMention() + " -> " + nonMax.getName());
+                }
+            }
+        }
+        nationChannels.entrySet().stream().filter(f -> f.getValue().size() > 1).forEach(f -> errors.putIfAbsent(f.getValue().iterator().next(), "Nation has multiple channels"));
+
+        Supplier<String> errorsToString = () -> {
+            StringBuilder response = new StringBuilder();
+            response.append("channel\tcategory\tmention\treason\n");
+            for (Map.Entry<TextChannel, String> entry : errors.entrySet()) {
+                TextChannel channel = entry.getKey();
+                response.append(channel.getName() + "\t" +
+                        channel.getParentCategory() + "\t" +
+                        entry.getKey().getAsMention() + "\t" +
+                        entry.getValue() + "\n");
+            }
+            return response.toString();
+        };
+        Supplier<String> warningsToString = () -> {
+            StringBuilder response = new StringBuilder();
+            response.append("channel\tcategory\tmention\treason\n");
+            for (Map.Entry<TextChannel, Set<String>> entry : warnings.entrySet()) {
+                TextChannel channel = entry.getKey();
+                for (String reason : entry.getValue()) {
+                    response.append(channel.getName() + "\t" +
+                            channel.getParentCategory() + "\t" +
+                            entry.getKey().getAsMention() + "\t" +
+                            reason + "\n");
+                }
+            }
+            return response.toString();
+        };
+        IMessageBuilder msg = io.create();
+        if (!errors.isEmpty()) {
+            msg.file("errors.txt", errorsToString.get());
+        }
+        if (!warnings.isEmpty()) {
+            msg.file("warnings.txt", warningsToString.get());
+        }
+        if (changes.isEmpty()) {
+            msg.append("No channels will be moved.");
+        } else {
+            StringBuilder body = new StringBuilder();
+            for (String change : changes) {
+                body.append(change).append("\n");
+            }
+            if (force) {
+                msg = msg.append(body.toString());
+            } else {
+                msg = msg.confirmation("Confirm Move " + changes.size() + " channels", body.toString(), command).cancelButton();
+            }
+        }
+        return msg;
+    }
 
     @Command(desc = "View the list of bans for a nation id")
     public String viewBans(int nationId) {
@@ -290,24 +690,24 @@ public class IACommands {
 
     @Command(desc = "Allow a role to add/remove roles from users")
     @RolePermission(Roles.ADMIN)
-    public String addAssignableRole(@Me GuildDB db, @Arg("Require this role in order to use the specified self roles") Role requireRole, Set<Role> assignableRoles) {
+    public String addAssignableRole(@Me GuildDB db, @Me User user, @Arg("Require this role in order to use the specified self roles") Role requireRole, Set<Role> assignableRoles) {
         Map<Role, Set<Role>> assignable = db.getOrNull(GuildKey.ASSIGNABLE_ROLES);
         if (assignable == null) assignable = new HashMap<>();
 
         assignable.computeIfAbsent(requireRole, f -> new HashSet<>()).addAll(assignableRoles);
 
         StringBuilder result = new StringBuilder();
-        result.append(GuildKey.ASSIGNABLE_ROLES.set(db, assignable)).append("\n");
+        result.append(GuildKey.ASSIGNABLE_ROLES.set(db, user, assignable)).append("\n");
 
         result.append(StringMan.getString(requireRole) + " can now add/remove " + StringMan.getString(assignableRoles) + " via " + CM.self.add.cmd.toSlashMention() + " / " + CM.self.remove.cmd.toSlashMention() + "\n" +
-                "- To see a list of current mappings, use " + CM.settings.info.cmd.create(GuildKey.ASSIGNABLE_ROLES.name(), null, null) + "");
+                "- To see a list of current mappings, use " + CM.settings.info.cmd.key(GuildKey.ASSIGNABLE_ROLES.name()) + "");
         return result.toString();
     }
 
     @Command(desc = "Remove a role from adding/removing specified roles\n" +
             "(having manage roles perm on discord overrides this)")
     @RolePermission(Roles.ADMIN)
-    public String removeAssignableRole(@Me GuildDB db, Role requireRole, Set<Role> assignableRoles) {
+    public String removeAssignableRole(@Me GuildDB db, @Me User user, Role requireRole, Set<Role> assignableRoles) {
         Map<Role, Set<Role>> assignable = db.getOrNull(GuildKey.ASSIGNABLE_ROLES);
         if (assignable == null) assignable = new HashMap<>();
 
@@ -327,7 +727,7 @@ public class IACommands {
             }
         }
 
-        response.append("\n" + GuildKey.ASSIGNABLE_ROLES.set(db, assignable));
+        response.append("\n" + GuildKey.ASSIGNABLE_ROLES.set(db, user, assignable));
 
         return response.toString() + "\n" +
                 "- To see a list of current mappings, use " + GuildKey.ASSIGNABLE_ROLES.getCommandMention() + "";
@@ -398,13 +798,18 @@ public class IACommands {
         if (role == null) {
             return WarCommands.beigeAlertMode(member.getUser(), me, NationMeta.BeigeAlertMode.NO_ALERTS);
         }
-        RateLimitUtil.queue(guild.addRoleToMember(member, role));
-        return "Opted out of beige alerts";
+        if (member.getRoles().contains(role)) {
+            // remove role
+            RateLimitUtil.complete(guild.removeRoleFromMember(member, role));
+            return "Opted in to beige alerts (@" + role.getName() + " role removed). Use the command again to opt out";
+        }
+        RateLimitUtil.complete(guild.addRoleToMember(member, role));
+        return "Opted out of beige alerts (@" + role.getName() + " role added). Use the command again to opt in";
     }
 
     @Command(desc = "Unassign a mentee from all mentors")
     @RolePermission(Roles.INTERNAL_AFFAIRS_STAFF)
-    public String unassignMentee(@Me GuildDB db, @Me Guild guild, @Me DBNation nation, DBNation mentee) {
+    public String unassignMentee(@Me GuildDB db, @Me DBNation nation, DBNation mentee) {
         ByteBuffer mentorBuf = db.getNationMeta(mentee.getNation_id(), NationMeta.CURRENT_MENTOR);
         DBNation currentMentor = mentorBuf != null ?  DBNation.getById(mentorBuf.getInt()) : null;
 
@@ -531,12 +936,12 @@ public class IACommands {
     @Command(desc = "List mentees, grouped by their respective mentors", aliases = {"mymentees"})
     @RolePermission(value=Roles.INTERNAL_AFFAIRS)
     public String myMentees(@Me Guild guild, @Me GuildDB db, @Me DBNation me, @Default("*") Set<DBNation> mentees, @Arg("Activity requirements for mentors") @Default("2w") @Timediff long timediff) throws InterruptedException, ExecutionException, IOException {
-        return listMentors(guild, db, me,Collections.singleton(me), mentees, timediff, db.isWhitelisted(), true, false);
+        return listMentors(guild, db, Collections.singleton(me), mentees, timediff, db.isWhitelisted(), true, false);
     }
 
     @Command(desc = "List mentors, grouped by their respective mentees", aliases = {"listMentors", "mentors", "mentees"})
     @RolePermission(value=Roles.INTERNAL_AFFAIRS)
-    public String listMentors(@Me Guild guild, @Me GuildDB db, @Me DBNation me, @Default("*") Set<DBNation> mentors, @Default("*") Set<DBNation> mentees,
+    public String listMentors(@Me Guild guild, @Me GuildDB db, @Default("*") Set<DBNation> mentors, @Default("*") Set<DBNation> mentees,
                               @Arg("Activity requirements for mentors") @Default("2w") @Timediff long timediff,
                               @Arg("Include an audit summary with the list") @Switch("a") boolean includeAudit,
                               @Arg("Do NOT list members without a mentor") @Switch("u") boolean ignoreUnallocatedMembers,
@@ -633,7 +1038,7 @@ public class IACommands {
             }
             User mentorUser = mentor.getUser();
             if (mentorUser == null) {
-                response.append("**MENTOR IS NOT VERIFIED:** " + TimeUtil.turnsToTime(mentor.getVm_turns())).append("\n");
+                response.append("**MENTOR IS NOT VERIFIED**").append("\n");
             } else {
                 if (!Roles.MEMBER.has(mentorUser, guild)) {
                     response.append("**MENTOR IS NOT MEMBER:** ").append("\n");
@@ -792,7 +1197,6 @@ public class IACommands {
             if (transaction.note == null || !transaction.note.contains("#incentive")) continue;
             Map<String, String> notes = PW.parseTransferHashNotes(transaction.note);
             String incentive = notes.get("#incentive");
-            DBNation member = DBNation.getById(transaction.banker_nation);
             DBNation gov = DBNation.getById((int) transaction.sender_id);
 
             if (gov != null) {
@@ -818,9 +1222,10 @@ public class IACommands {
             "See: <https://github.com/xdnw/locutus/wiki/nation_placeholders>")
     @RolePermission(Roles.MAIL)
     @IsAlliance
-    public String reply(@Me GuildDB db, @Me DBNation me, @Me User author, @Me IMessageIO channel, @Arg("The nation you are replying to") DBNation receiver, @Arg("The url of the mail") String url, String message, @Arg("The account to reply with\nMust be the same account that received the mail") @Switch("s") DBNation sender) throws IOException {
-        if (!url.contains("message/id=")) return "URL must be a message url";
-        int messageId = Integer.parseInt(url.split("=")[1]);
+    public String reply(@Me DBNation me, @Me User author, @Arg("The nation you are replying to") DBNation receiver, @Arg("The url of the mail") String url, String message, @Arg("The account to reply with\nMust be the same account that received the mail") @Switch("s") DBNation sender) throws IOException {
+        if (!url.contains("message/id=") && !MathMan.isInteger(url)) return "URL must be a message url";
+        int messageId = MathMan.isInteger(url) ? Integer.parseInt(url) : Integer.parseInt(url.split("=")[1]);
+        GPTUtil.checkThrowModeration(message);
 
         Auth auth;
         if (sender == null) {
@@ -839,6 +1244,131 @@ public class IACommands {
 
         String result = new MailRespondTask(auth, receiver.getLeader(), messageId, message, null).call();
         return "Mail: " + result;
+    }
+
+    @Command(desc = "Read and display an in-game message for an id from a nation's account\n" +
+            "The nation must be your own or in the same alliance\n" +
+            "Login details via `{prefix}credentials login`")
+    @RolePermission(Roles.MAIL)
+    @IsAlliance
+    public String readMail(@Me DBNation me, @Me GuildDB db, int message_id, @Default DBNation account) throws Exception {
+        if (account == null) account = me;
+        if (me.getId() != account.getId()) {
+            if (!db.isAllianceId(account.getAlliance_id())) return "Nation is not a member of the alliance";
+        }
+        Auth auth = account.getAuth(true);
+
+        List<ReadMailTask.MailMessage> msgs = new ReadMailTask(auth, message_id).call();
+        if (msgs.isEmpty()) {
+            return "No messages found for " + account.getMarkdownUrl() + " with id `" + message_id + "`. Ensure the `account` is correct and the message is not more than 30 days old";
+        }
+        StringBuilder response = new StringBuilder();
+        for (ReadMailTask.MailMessage msg : msgs) {
+            response.append("**__" + PW.getMarkdownUrl(msg.getNationId(), false) + "__**" + DiscordUtil.timestamp(msg.getDate(), null) + "\n");
+            response.append(msg.getContent()).append("\n\n");
+        }
+        return response.toString();
+    }
+
+    @Command(desc = "Show ingame mail and optionally the responses\n" +
+            "Results are in a spreadsheet\n" +
+            "A search term can be specified to only show messages containing that in the subject line\n" +
+            "By default only unread messages are checked")
+    @IsAlliance
+    public String searchMail(@Me GuildDB db, @Me IMessageIO io,
+                             @Me DBNation me,
+                             @Arg("The account to check the mail of\n" +
+                                     "Defaults to your own nation")
+                             @Default DBNation account,
+                             @Arg("The term to search for\n" +
+                                     "Defaults to show all messages")
+                             @Switch("q") String search_for,
+                             @Arg("Don't search unread messages\n" +
+                                     "Defaults to false")
+                             @Switch("u") boolean skip_unread,
+                             @Switch("r") boolean check_read,
+                             @Switch("c") boolean read_content,
+                             @Arg("If responses are grouped by nation")
+                             @Switch("g") boolean group_by_nation,
+                             @Arg("If responses are counted")
+                             @Switch("n") boolean count_replies
+                             ) throws Exception {
+        if (account == null) account = me;
+        if (me.getId() != account.getId()) {
+            if (!db.isAllianceId(account.getAlliance_id())) return "Nation is not a member of the alliance";
+        }
+        Auth auth = account.getAuth(true);
+
+        if (skip_unread) {
+            check_read = true;
+        }
+        Map<DBNation, Map<Mail, List<String>>> results = new LinkedHashMap<>();
+        SearchMailTask task = new SearchMailTask(auth, search_for, !skip_unread, check_read, read_content, (mail, strings) -> {
+            DBNation nation = Locutus.imp().getNationDB().getNation(mail.nationId);
+            if (nation != null) {
+                results.computeIfAbsent(nation, f -> new LinkedHashMap<>()).put(mail, strings);
+            }
+        });
+        task.call();
+
+        SpreadSheet sheet = SpreadSheet.create(db, SheetKey.MAIL_RESPONSES_SHEET);
+
+        List<String> header = new ArrayList<>(Arrays.asList(
+                "nation",
+                "alliance",
+                "mail-id",
+                "subject",
+                "response"
+        ));
+
+        sheet.setHeader(header);
+
+        List<Object> row = new ArrayList<>();
+        for (Map.Entry<DBNation, Map<Mail, List<String>>> entry : results.entrySet()) {
+            row.clear();
+            DBNation nation = entry.getKey();
+
+            int countVal = 0;
+            for (Map.Entry<Mail, List<String>> mailListEntry : entry.getValue().entrySet()) {
+                if (!group_by_nation) row.clear();
+
+                Mail mail = mailListEntry.getKey();
+                List<String> strings = mailListEntry.getValue();
+
+                if (row.isEmpty()) {
+                    int allianceId = nation != null ? nation.getAlliance_id() : 0;
+                    row.add(MarkupUtil.sheetUrl(PW.getName(mail.nationId, false), PW.getUrl(mail.nationId, false)));
+                    row.add(MarkupUtil.sheetUrl(PW.getName(allianceId, true), PW.getUrl(allianceId, true)));
+                    row.add(mail.id + "");
+                    row.add(mail.subject);
+                }
+
+                if (count_replies) {
+                    strings.removeIf(f -> f.equalsIgnoreCase("false"));
+                    if (group_by_nation) {
+                        countVal += strings.size();
+                    } else {
+                        row.add(strings.size());
+                    }
+                } else {
+                    row.addAll(strings);
+                }
+
+                if (!group_by_nation) sheet.addRow(row);
+            }
+            if (group_by_nation) {
+                if (count_replies) {
+                    row.add(countVal);
+                }
+                sheet.addRow(row);
+            }
+        }
+
+        sheet.updateClearCurrentTab();
+        sheet.updateWrite();
+
+        sheet.attach(io.create(), "mail", null, false, 0).send();
+        return null;
     }
 
     @Command(desc = "Generate a list of nations and their expected raid loot\n" +
@@ -915,8 +1445,10 @@ public class IACommands {
             "`Hello Nation/12345678910`\n" +
             "(Note: DM Borg to setup mail responses)")
     @NoFormat
-    public static String mail(@Me DBNation me, @Me JSONObject command, @Me GuildDB db, @Me IMessageIO channel, @Me User author, Set<DBNation> nations, String subject, @TextArea String message, @Switch("f") boolean confirm, @Arg("Send from the api key registered to the guild") @Switch("l") boolean sendFromGuildAccount, @Arg("The api key to use to send the mail") @Switch("a") String apiKey) throws IOException {
+    public static String mail(@Me DBNation me, @Me JSONObject command, @Me GuildDB db, @Me IMessageIO channel, @Me User author, Set<DBNation> nations, String subject, @TextArea String message, @Switch("f") boolean force, @Arg("Send from the api key registered to the guild") @Switch("l") boolean sendFromGuildAccount, @Arg("The api key to use to send the mail") @Switch("a") String apiKey) throws IOException {
+        subject = MarkupUtil.transformURLIntoLinks(subject);
         message = MarkupUtil.transformURLIntoLinks(message);
+        GPTUtil.checkThrowModeration(subject + " " + message);
 
         ApiKeyPool.ApiKey myKey = me.getApiKey(false);
 
@@ -944,7 +1476,7 @@ public class IACommands {
             }
         }
 
-        if (!confirm) {
+        if (!force) {
             String title = "Send " + nations.size() + " messages";
 
             Set<Integer> alliances = new LinkedHashSet<>();
@@ -962,7 +1494,7 @@ public class IACommands {
             body.append("subject: " + subject + "\n");
             body.append("body: ```" + message + "```");
 
-            channel.create().confirmation(embedTitle, body.toString(), command, "confirm").send();
+            channel.create().confirmation(embedTitle, body.toString(), command).send();
             return null;
         }
 
@@ -1035,7 +1567,7 @@ public class IACommands {
             }
         }
 
-        Map<Integer, TaxBracket> brackets = alliance.getTaxBrackets(false);
+        Map<Integer, TaxBracket> brackets = alliance.getTaxBrackets(TimeUnit.MINUTES.toMillis(5));
 
         if (bracket == null) {
             StringBuilder response = new StringBuilder();
@@ -1115,12 +1647,9 @@ public class IACommands {
         DBAlliancePosition myPosition = me.getAlliancePosition();
         DBAlliancePosition nationPosition = nation.getAlliancePosition();
         if (!Roles.ADMIN.hasOnRoot(author)) {
-            if (me.getAlliance_id() != allianceId || myPosition == null) {
-                // cannot promote above officer unless admin
-                if (!Roles.ADMIN.has(author, db.getGuild())) {
-                    if (position.hasAnyOfficerPermissions()) {
-                        return "You do not have permission to grant permissions you currently do not posses in the alliance";
-                    }
+            if (me.getAlliance_id() != allianceId || myPosition == null || !db.isAllianceId(myPosition.getAlliance_id())) {
+                if (position.hasAnyOfficerPermissions()) {
+                    return "You do not have permission to grant permissions you currently do not posses in the alliance";
                 }
             } else {
                 if (position.getPosition_level() > myPosition.getPosition_level()) {
@@ -1210,8 +1739,7 @@ public class IACommands {
                 if (db.getOffshore() != null) {
                     String title = "Disburse 3 days";
                     String body = "Use this once they have a suitable city build & color to send resources for the next 3 days";
-
-                    CM.transfer.raws cmd = CM.transfer.raws.cmd.create(nation.getNation_id() + "", "3", "#deposit", null, null, nation.getNation_id() + "", null, null, null, null, null, null, null, null, "true", null);
+                    CM.transfer.raws cmd = CM.transfer.raws.cmd.nationList(nation.getNation_id() + "").days("3").bank_note("#deposit").nation_account(nation.getNation_id() + "").bypass_checks("true");
                     channel.create().embed(title, body)
                             .commandButton(cmd, "Disburse 3 days")
                             .send();
@@ -1309,6 +1837,10 @@ public class IACommands {
         if (sheet == null) {
             sheet = SpreadSheet.create(db, SheetKey.MAIL_RESPONSES_SHEET);
         }
+        String checkModMsg = command;
+        if (subject != null) checkModMsg += subject;
+        if (body != null) checkModMsg += body;
+        GPTUtil.checkThrowModeration(checkModMsg);
 
         List<String> header = new ArrayList<>(Arrays.asList(
                 "nation",
@@ -1357,31 +1889,30 @@ public class IACommands {
             String subjectFormat = subjectF.apply(nation);
             String bodyFormat = bodyF.apply(nation);
 
-            Map.Entry<CommandResult, String> response = nation.runCommandInternally(guild, nationUser, command);
+            Map.Entry<CommandResult, List<StringMessageBuilder>> response = nation.runCommandInternally(guild, nationUser, command);
             CommandResult respType = response.getKey();
-            String cmdMsg = response.getValue();
+            List<StringMessageBuilder> messages = response.getValue();
 
             if (respType == CommandResult.SUCCESS) {
                 if (!bodyFormat.isEmpty()) {
-                    bodyFormat = MarkupUtil.markdownToHTML(bodyFormat) + "<br>";
+                    bodyFormat = bodyFormat + "\n";
                 }
-                bodyFormat += cmdMsg;
 
                 header.set(0, MarkupUtil.sheetUrl(nation.getNation(), nation.getUrl()));
                 header.set(1, MarkupUtil.sheetUrl(nation.getAllianceName(), nation.getAllianceUrl()));
                 header.set(2, "");
                 header.set(3, subjectFormat);
-                header.set(4, bodyFormat);
+                header.set(4, IMessageBuilder.toJson(bodyFormat, messages, true, true, true).toString());
 
                 sheet.addRow(header);
                 success++;
             } else{
-                if (cmdMsg == null) {
+                if (messages == null) {
                     respType = CommandResult.NO_RESPONSE;
-                } else if (cmdMsg.isEmpty()) {
+                } else if (messages.isEmpty()) {
                     respType = CommandResult.EMPTY_RESPONSE;
                 }
-                errors.put(nation, new AbstractMap.SimpleEntry<>(respType, cmdMsg));
+                errors.put(nation, new AbstractMap.SimpleEntry<>(respType, IMessageBuilder.toJson("", messages, false, false, false).toString()));
             }
         }
 
@@ -1402,7 +1933,7 @@ public class IACommands {
         IMessageBuilder msg = channel.create();
         sheet.attach(msg, "mail_command", embed, false, 0);
         embed.append("\nPress `confirm` to confirm");
-        CM.mail.sheet cmd = CM.mail.sheet.cmd.create(sheet.getURL(), null, sendDM ? "true" : null, skipMail ? "true" : null);
+        CM.mail.sheet cmd = CM.mail.sheet.cmd.sheet(sheet.getURL()).dm(sendDM ? "true" : null).skipMail(skipMail ? "true" : null);
 
         msg.confirmation(title, embed.toString(), cmd).send();
 
@@ -1438,6 +1969,10 @@ public class IACommands {
         int applicants = 0;
 
         Map<DBNation, Map.Entry<String, String>> messageMap = new LinkedHashMap<>();
+        if (force) {
+            String messagesJoined = messageMap.values().stream().map(e -> e.getKey() + " " + e.getValue()).collect(Collectors.joining("\n"));
+            GPTUtil.checkThrowModeration(messagesJoined);
+        }
 
         for (int i = 1; i < nationNames.size(); i++) {
             Object nationNameObj = nationNames.get(i);
@@ -1500,11 +2035,18 @@ public class IACommands {
             Map.Entry<String, String> msgEntry = entry.getValue();
             String subject = msgEntry.getKey();
             String body = msgEntry.getValue();
+            StringMessageBuilder richBody = StringMessageBuilder.fromText(body, true, db.getGuild());
 
             List<String> result = new ArrayList<>();
             if (!skipMail) {
                 try {
-                    JsonObject json = nation.sendMail(keys, subject, body, false);
+                    String html;
+                    if (richBody != null) {
+                        html = richBody.toSimpleHtml(true, false);
+                    } else {
+                        html = MarkupUtil.markdownToHTML(body);
+                    }
+                    JsonObject json = nation.sendMail(keys, subject, html, false);
                     result.add(json + "");
                 } catch (IOException e) {
                     errors++;
@@ -1522,9 +2064,14 @@ public class IACommands {
                 } else {
                     try {
                         PrivateChannel channel = RateLimitUtil.complete(user.openPrivateChannel());
-                        RateLimitUtil.queue(channel.sendMessage(body));
+                        DiscordChannelIO dmIo = new DiscordChannelIO(channel);
+                        IMessageBuilder msg = dmIo.create();
+                        if (richBody != null) richBody.writeTo(msg);
+                        else msg.append(body);
+                        msg.send();
                         result.add("\n- **dm**: Sent dm");
                     } catch (Throwable e) {
+                        e.printStackTrace();
                         result.add("\n- **dm**: Failed to send dm (`" + e.getMessage() + "`)");
                     }
                 }
@@ -1609,7 +2156,7 @@ public class IACommands {
 
     @Command(desc = "Move an interview channel from the `interview-archive` category")
     @RolePermission(Roles.MEMBER)
-    public String open(@Me GuildDB db, @Me User author, @Me Guild guild, @Me IMessageIO channel, @Default Category category) {
+    public String open(@Me User author, @Me Guild guild, @Me IMessageIO channel, @Default Category category) {
         if (!(channel instanceof TextChannel)) {
             return "Not a text channel";
         }
@@ -1925,17 +2472,103 @@ public class IACommands {
     @Command(desc = "Set the interview message")
     @RolePermission(Roles.INTERNAL_AFFAIRS)
     public String setInterview(@Me GuildDB db, IACategory category, String message) {
-        db.setCopyPasta("interview", message);
-        return "Set `interview` to:\n```md\n" + message + "```\n\nUse ";// TODO CM REF + CM.interview.questions.view.toSlashMention() + " to view";
+        db.setCopyPasta("interview", message.replace("\\n", "\n"));
+        return "Set `interview` to:\n```md\n" + message + "```\n\nUse " + CM.interview.questions.view.cmd.toSlashMention() + " to view";
     }
 
     @Command(desc = "View the interview message")
-    @RolePermission(Roles.INTERNAL_AFFAIRS)
+    @RolePermission(value = {Roles.INTERNAL_AFFAIRS, Roles.INTERNAL_AFFAIRS_STAFF}, any = true)
     public String viewInterview(@Me GuildDB db, IACategory category) {
         String message = db.getCopyPasta("interview", true);
         if (message == null) {
-            return "No message set. Set one with " + "";//TODO CM REF CM.interview.questions.set.cmd.toSlashMention();
+            return "No message set. Set one with " + "" +  CM.interview.questions.set.cmd.toSlashMention();
         }
-        return "Interview questions:\n```md\n" + message + "```";
+        return "Interview questions:\n" + message + "";
+    }
+
+    @Command(desc = "List nations and their interview progress")
+    @RolePermission(value = {Roles.INTERNAL_AFFAIRS, Roles.INTERNAL_AFFAIRS_STAFF}, any = true)
+    @IsAlliance
+    public String interviewSheet(@Me GuildDB db, @Me Guild guild, @Me IMessageIO io,
+                                 @Default Set<DBNation> nations,
+                                 @Switch("s") SpreadSheet sheet) throws GeneralSecurityException, IOException {
+        if (sheet == null) {
+            sheet = SpreadSheet.create(db, SheetKey.INTERVIEW_SHEET);
+        }
+        List<String> header = new ArrayList<>(Arrays.asList(
+                "Nation",
+                "Alliance",
+                "Cities",
+                "AvgInfra",
+                "MMR",
+                "offensives",
+                "policy",
+                "interview",
+                "roles"
+        ));
+
+        sheet.setHeader(header);
+        if (nations == null) {
+            nations = new LinkedHashSet<>();
+            IACategory iaCat = db.getIACategory();
+            if (iaCat != null) {
+                nations.addAll(iaCat.load().getChannelMap().keySet());
+            }
+            Set<DBNation> aaNations = db.getAllianceList().getNations(true, 14400, false);
+            // add all applicants that are <10d active
+            nations.addAll(aaNations
+                    .stream().filter(f -> f.getPositionEnum() == Rank.APPLICANT).toList());
+            // add all nations without member role but in server
+            Role memberRole = Roles.MEMBER.toRole(guild);
+            if (memberRole != null) {
+                for (DBNation nation : aaNations) {
+                    User user = nation.getUser();
+                    if (user == null) continue;
+                    Member member = guild.getMember(user);
+                    if (member == null) continue;
+                    if (!member.getRoles().contains(memberRole)) {
+                        nations.add(nation);
+                    }
+                }
+            }
+        }
+
+        for (DBNation nation : nations) {
+            User user = nation.getUser();
+            if (user == null) continue;
+            Member member = guild.getMember(user);
+            if (member == null) continue;
+
+            List<Object> row = new ArrayList<>();
+            row.add(MarkupUtil.sheetUrl(nation.getNation(), PW.getUrl(nation.getNation_id(), false)));
+            String aaModifier = "";
+            if (nation.getPositionEnum() == Rank.APPLICANT) {
+                aaModifier = " (applicant)";
+            }
+            row.add(MarkupUtil.sheetUrl(nation.getAllianceName(), PW.getUrl(nation.getAlliance_id(), true)) + aaModifier);
+            row.add(nation.getCities());
+            row.add(nation.getAvg_infra());
+            row.add("=\"" + nation.getMMR() + "\"");
+            row.add(nation.getOff());
+            row.add(nation.getWarPolicy());
+
+            ByteBuffer interviewMeta = nation.getMeta(NationMeta.INTERVIEW_INDEX);
+            if (interviewMeta == null) row.add("");
+            else row.add(InterviewQuestion.values()[interviewMeta.getInt()].name());
+
+            List<Role> roles = member.getRoles();
+            List<String> rolesStr = new ArrayList<>();
+            for (Role role : roles) rolesStr.add(role.getName());
+            row.add(StringMan.join(rolesStr, ","));
+
+
+            sheet.addRow(row);
+        }
+
+        sheet.updateClearCurrentTab();
+        sheet.updateWrite();
+
+        sheet.attach(io.create(), "interview").send();
+        return null;
     }
 }

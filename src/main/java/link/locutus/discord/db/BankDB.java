@@ -1,6 +1,7 @@
 package link.locutus.discord.db;
 
 import com.politicsandwar.graphql.model.*;
+import com.politicsandwar.graphql.model.SortOrder;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
@@ -9,6 +10,7 @@ import link.locutus.discord.apiv1.entities.BankRecord;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.apiv3.PoliticsAndWarV3;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.binding.bindings.TypedFunction;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.entities.*;
@@ -29,14 +31,8 @@ import org.example.jooq.bank.tables.records.TaxDepositsDateRecord;
 import org.example.jooq.bank.tables.records.Transactions_2Record;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import org.jooq.Condition;
-import org.jooq.GroupField;
-import org.jooq.Index;
-import org.jooq.InsertSetMoreStep;
-import org.jooq.Query;
+import org.jooq.*;
 import org.jooq.Record;
-import org.jooq.Result;
-import org.jooq.SortField;
 import org.jooq.exception.InvalidResultException;
 import org.jooq.impl.DSL;
 
@@ -78,8 +74,8 @@ import static org.jooq.impl.DSL.lower;
 public class BankDB extends DBMainV3 {
     private final Map<Long, Set<Transaction2>> transactionCache = new ConcurrentHashMap<>();
 
-    public BankDB(String name) throws SQLException, ClassNotFoundException {
-        super(Settings.INSTANCE.DATABASE, name, false);
+    public BankDB() throws SQLException, ClassNotFoundException {
+        super(Settings.INSTANCE.DATABASE, "bank", false);
     }
 
     public List<Transaction2> getTransactions(Condition condition) {
@@ -155,10 +151,8 @@ public class BankDB extends DBMainV3 {
     public void updateBankRecs(int nationId, boolean priority, Consumer<Event> eventConsumer) {
         PoliticsAndWarV3 v3 = Locutus.imp().getV3();
 
-        long start = System.currentTimeMillis();
         List<Transaction2> latestTx = getTransactionsByNation(nationId, 1);
         int minId = latestTx.size() == 1 ? latestTx.get(0).tx_id : 0;
-        System.out.println("Latest tx id: " + minId + " in " + (System.currentTimeMillis() - start) + "ms");
         List<Bankrec> bankRecs = v3.fetchBankRecsWithInfo(priority, new Consumer<BankrecsQueryRequest>() {
             @Override
             public void accept(BankrecsQueryRequest request) {
@@ -168,9 +162,7 @@ public class BankDB extends DBMainV3 {
             }
         });
 
-        System.out.println("Fetched " + bankRecs.size() + " bank recs in " + (System.currentTimeMillis() - start) + "ms");
         saveBankRecs(bankRecs, eventConsumer);
-        System.out.println("Saved bank recs in " + (System.currentTimeMillis() - start) + "ms");
     }
 
 //    public void updateBankRecsv2(int nationId, boolean priority, Consumer<Event> eventConsumer) {
@@ -188,7 +180,6 @@ public class BankDB extends DBMainV3 {
         List<Bankrec> records = new ArrayList<>();
         Runnable saveTransactions = () -> {
             if (records.isEmpty()) return;
-            System.out.println("Saving bank recs " + records.size());
             List<Bankrec> copy = new ArrayList<>(records);
             int maxId = copy.stream().mapToInt(Bankrec::getId).max().getAsInt();
             saveBankRecs(copy, eventConsumer);
@@ -482,12 +473,12 @@ public class BankDB extends DBMainV3 {
         }
 
         @Command(desc = "Get an attribute for the nation of this tax record")
-        public String getNationInfo(TypedFunction<DBNation, String> nationFunction) {
+        public String getNationInfo(@NoFormat TypedFunction<DBNation, String> nationFunction) {
             return nationFunction.applyCached(DBNation.getOrCreate(nationId));
         }
 
         @Command(desc = "Get an attribute for the alliance of this tax record")
-        public String getAllianceInfo(TypedFunction<DBAlliance, String> allianceFunction) {
+        public String getAllianceInfo(@NoFormat TypedFunction<DBAlliance, String> allianceFunction) {
             return allianceFunction.applyCached(DBAlliance.getOrCreate(allianceId));
         }
 
@@ -722,8 +713,29 @@ public class BankDB extends DBMainV3 {
         return getTransactions(TRANSACTIONS_2.TX_ID.in(idsSorted), TRANSACTIONS_2.TX_ID.desc(), null);
     }
 
-    public List<Transaction2> getTransactionsByBySenderOrReceiver(Set<Long> senders, Set<Long> receivers, long minDateMs) {
-        return getTransactions(TRANSACTIONS_2.TX_DATETIME.ge(minDateMs).and(TRANSACTIONS_2.SENDER_ID.in(senders).and(TRANSACTIONS_2.RECEIVER_ID.in(receivers))), TRANSACTIONS_2.TX_ID.desc(), null);
+    public List<Transaction2> getTransactionsByBySenderOrReceiver(Set<Long> senders, Set<Long> receivers, long minDateMs, long maxDateMs) {
+        List<Condition> addConditions = new ArrayList<>();
+        if (minDateMs > 0) {
+            addConditions.add(TRANSACTIONS_2.TX_DATETIME.ge(minDateMs));
+        }
+        if (maxDateMs != Long.MAX_VALUE) {
+            addConditions.add(TRANSACTIONS_2.TX_DATETIME.le(maxDateMs));
+        }
+        if (senders.size() > 0) {
+            if (senders.size() == 1) {
+                addConditions.add(TRANSACTIONS_2.SENDER_ID.eq(senders.iterator().next()));
+            } else {
+                addConditions.add(TRANSACTIONS_2.SENDER_ID.in(senders));
+            }
+        }
+        if (receivers.size() > 0) {
+            if (receivers.size() == 1) {
+                addConditions.add(TRANSACTIONS_2.RECEIVER_ID.eq(receivers.iterator().next()));
+            } else {
+                addConditions.add(TRANSACTIONS_2.RECEIVER_ID.in(receivers));
+            }
+        }
+        return getTransactions(DSL.and(addConditions), TRANSACTIONS_2.TX_ID.desc(), null);
     }
 
     public List<Transaction2> getTransactionsByBySender(Set<Long> senders, long minDateMs) {
@@ -877,10 +889,8 @@ public class BankDB extends DBMainV3 {
         invalidateTXCache();
         int[] result;
         if (queries.size() == 1) {
-            System.out.println("Add 1");
             result = new int[]{queries.get(0).execute()};
         } else {
-            System.out.println("Add batch");
             result = ctx().batch(queries).execute();
         }
         synchronized (transactionCache) {

@@ -9,6 +9,7 @@ import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
 import link.locutus.discord.commands.manager.v2.binding.bindings.Placeholders;
+import link.locutus.discord.commands.manager.v2.binding.bindings.SelectorInfo;
 import link.locutus.discord.commands.manager.v2.binding.bindings.TypedFunction;
 import link.locutus.discord.commands.manager.v2.binding.validator.ValidatorStore;
 import link.locutus.discord.commands.manager.v2.command.CommandCallable;
@@ -35,13 +36,7 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.lang.reflect.Type;
 import java.security.GeneralSecurityException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -62,13 +57,31 @@ public class AlliancePlaceholders extends Placeholders<DBAlliance> {
         List<AllianceInstanceAttribute> result = new ArrayList<>();
         for (CommandCallable cmd : getFilterCallables()) {
             String id = cmd.aliases().get(0);
-            TypedFunction<DBAlliance, ?> typeFunction = formatRecursively(store, id, null, 0, false);
+            TypedFunction<DBAlliance, ?> typeFunction = formatRecursively(store, id, null, 0, false, false);
             if (typeFunction == null) continue;
 
             AllianceInstanceAttribute metric = new AllianceInstanceAttribute(cmd.getPrimaryCommandId(), cmd.simpleDesc(), typeFunction.getType(), typeFunction);
             result.add(metric);
         }
         return result;
+    }
+
+    @Override
+    public Set<SelectorInfo> getSelectorInfo() {
+        return new LinkedHashSet<>(List.of(
+                new SelectorInfo("aa:ALLIANCE_NAME", "aa:Rose", "A qualified alliance name"),
+                new SelectorInfo("alliance:ALLIANCE_NAME", "alliance:Eclipse", "A qualified alliance name"),
+                new SelectorInfo("alliance/id=ALLIANCE_ID", "alliance/id=790", "An alliance url"),
+                new SelectorInfo("ALLIANCE_ID", "790", "An alliance id"),
+                new SelectorInfo("coalition:COALITION", "coalition:allies", "A qualified coalition name"),
+                new SelectorInfo("~COALITION", "~enemies", "A coalition name"),
+                new SelectorInfo("*", null, "All alliances")
+        ));
+    }
+
+    @Override
+    public Set<String> getSheetColumns() {
+        return Set.of("alliance");
     }
 
     public AllianceInstanceAttributeDouble getMetricDouble(ValueStore store, String id) {
@@ -86,34 +99,34 @@ public class AlliancePlaceholders extends Placeholders<DBAlliance> {
     @Command(desc = "Add columns to a Alliance sheet")
     @RolePermission(value = {Roles.INTERNAL_AFFAIRS_STAFF, Roles.MILCOM, Roles.ECON_STAFF, Roles.FOREIGN_AFFAIRS_STAFF, Roles.ECON, Roles.FOREIGN_AFFAIRS}, any = true)
     public String addColumns(@Me JSONObject command, @Me GuildDB db, @Me IMessageIO io, @Me User author, @Switch("s") SheetTemplate sheet,
-                             @Default TypedFunction<DBAlliance, String> column1,
-                             @Default TypedFunction<DBAlliance, String> column2,
-                             @Default TypedFunction<DBAlliance, String> column3,
-                             @Default TypedFunction<DBAlliance, String> column4,
-                             @Default TypedFunction<DBAlliance, String> column5,
-                             @Default TypedFunction<DBAlliance, String> column6,
-                             @Default TypedFunction<DBAlliance, String> column7,
-                             @Default TypedFunction<DBAlliance, String> column8,
-                             @Default TypedFunction<DBAlliance, String> column9,
-                             @Default TypedFunction<DBAlliance, String> column10,
-                             @Default TypedFunction<DBAlliance, String> column11,
-                             @Default TypedFunction<DBAlliance, String> column12,
-                             @Default TypedFunction<DBAlliance, String> column13,
-                             @Default TypedFunction<DBAlliance, String> column14,
-                             @Default TypedFunction<DBAlliance, String> column15,
-                             @Default TypedFunction<DBAlliance, String> column16,
-                             @Default TypedFunction<DBAlliance, String> column17,
-                             @Default TypedFunction<DBAlliance, String> column18,
-                             @Default TypedFunction<DBAlliance, String> column19,
-                             @Default TypedFunction<DBAlliance, String> column20,
-                             @Default TypedFunction<DBAlliance, String> column21,
-                             @Default TypedFunction<DBAlliance, String> column22,
-                             @Default TypedFunction<DBAlliance, String> column23,
-                             @Default TypedFunction<DBAlliance, String> column24) throws GeneralSecurityException, IOException {
+                             @Default TypedFunction<DBAlliance, String> a,
+                             @Default TypedFunction<DBAlliance, String> b,
+                             @Default TypedFunction<DBAlliance, String> c,
+                             @Default TypedFunction<DBAlliance, String> d,
+                             @Default TypedFunction<DBAlliance, String> e,
+                             @Default TypedFunction<DBAlliance, String> f,
+                             @Default TypedFunction<DBAlliance, String> g,
+                             @Default TypedFunction<DBAlliance, String> h,
+                             @Default TypedFunction<DBAlliance, String> i,
+                             @Default TypedFunction<DBAlliance, String> j,
+                             @Default TypedFunction<DBAlliance, String> k,
+                             @Default TypedFunction<DBAlliance, String> l,
+                             @Default TypedFunction<DBAlliance, String> m,
+                             @Default TypedFunction<DBAlliance, String> n,
+                             @Default TypedFunction<DBAlliance, String> o,
+                             @Default TypedFunction<DBAlliance, String> p,
+                             @Default TypedFunction<DBAlliance, String> q,
+                             @Default TypedFunction<DBAlliance, String> r,
+                             @Default TypedFunction<DBAlliance, String> s,
+                             @Default TypedFunction<DBAlliance, String> t,
+                             @Default TypedFunction<DBAlliance, String> u,
+                             @Default TypedFunction<DBAlliance, String> v,
+                             @Default TypedFunction<DBAlliance, String> w,
+                             @Default TypedFunction<DBAlliance, String> x) throws GeneralSecurityException, IOException {
         return _addColumns(this, command,db, io, author, sheet,
-                column1, column2, column3, column4, column5, column6, column7, column8, column9, column10,
-                column11, column12, column13, column14, column15, column16, column17, column18, column19, column20,
-                column21, column22, column23, column24);
+                a, b, c, d, e, f, g, h, i, j,
+                k, l, m, n, o, p, q, r, s, t,
+                u, v, w, x);
     }
 
     public AllianceInstanceAttributeDouble getMetricDouble(ValueStore store, String id, boolean ignorePerms) {
@@ -121,7 +134,7 @@ public class AlliancePlaceholders extends Placeholders<DBAlliance> {
         if (cmd == null) return null;
         TypedFunction<DBAlliance, ?> typeFunction;
         try {
-            typeFunction = formatRecursively(store, id, null, 0, true);
+            typeFunction = formatRecursively(store, id, null, 0, false, true);
         } catch (CommandUsageException ignore) {
             return null;
         } catch (Throwable ignore2) {
@@ -173,7 +186,7 @@ public class AlliancePlaceholders extends Placeholders<DBAlliance> {
     }
 
     public AllianceInstanceAttribute getMetric(ValueStore<?> store, String id, boolean ignorePerms) {
-        TypedFunction<DBAlliance, ?> typeFunction = formatRecursively(store, id, null, 0, true);
+        TypedFunction<DBAlliance, ?> typeFunction = formatRecursively(store, id, null, 0, false, true);
         if (typeFunction == null) return null;
         return new AllianceInstanceAttribute<>(id, "", typeFunction.getType(), typeFunction);
     }

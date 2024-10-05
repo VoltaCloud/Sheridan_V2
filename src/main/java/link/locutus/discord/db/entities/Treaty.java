@@ -2,6 +2,8 @@ package link.locutus.discord.db.entities;
 
 import link.locutus.discord.apiv1.enums.TreatyType;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
+import link.locutus.discord.commands.manager.v2.binding.annotation.NoFormat;
+import link.locutus.discord.util.PW;
 import link.locutus.discord.util.TimeUtil;
 import org.jooq.meta.derby.sys.Sys;
 
@@ -24,7 +26,7 @@ public class Treaty {
         this.type = TreatyType.valueOf(v3.getTreaty_type().toUpperCase(Locale.ROOT));
         this.turn_ends = TimeUtil.getTurn() + v3.getTurns_left() + 1;
         this.date = v3.getDate().toEpochMilli();
-        this.pending = !v3.getApproved();
+        this.pending = v3.getApproved() != null && !v3.getApproved();
     }
 
     public Treaty(int id, long date, TreatyType type, int from, int to, long turn_ends) {
@@ -107,7 +109,7 @@ public class Treaty {
     }
 
     @Command(desc = "If this treaty is between the given alliances")
-    public boolean isAlliance(Set<DBAlliance> fromOrTo) {
+    public boolean isAlliance(@NoFormat Set<DBAlliance> fromOrTo) {
         return fromOrTo.contains(getFrom()) || fromOrTo.contains(getTo());
     }
 
@@ -121,6 +123,11 @@ public class Treaty {
                 ", to=" + to +
                 ", turn_ends=" + turn_ends +
                 '}';
+    }
+
+    @Command
+    public String toLineString() {
+        return type + ":" + PW.getName(from, true) + "/" + PW.getName(to, true);
     }
 
     @Command(desc = "Timestamp the treaty ends")

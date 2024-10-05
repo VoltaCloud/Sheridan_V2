@@ -16,28 +16,22 @@ import link.locutus.discord.apiv1.enums.MilitaryUnit;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.apiv1.enums.city.ICity;
 import link.locutus.discord.apiv1.enums.city.JavaCity;
-import link.locutus.discord.apiv1.enums.city.building.Building;
-import link.locutus.discord.apiv1.enums.city.building.Buildings;
-import link.locutus.discord.apiv1.enums.city.building.CommerceBuilding;
-import link.locutus.discord.apiv1.enums.city.building.MilitaryBuilding;
-import link.locutus.discord.apiv1.enums.city.building.ResourceBuilding;
+import link.locutus.discord.apiv1.enums.city.building.*;
 import link.locutus.discord.apiv1.enums.city.building.imp.APowerBuilding;
 import link.locutus.discord.apiv1.enums.city.building.imp.AResourceBuilding;
 import link.locutus.discord.apiv1.enums.city.project.Project;
 import link.locutus.discord.apiv1.enums.city.project.Projects;
 import link.locutus.discord.apiv3.csv.DataDumpParser;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
+import link.locutus.discord.commands.manager.v2.binding.annotation.Switch;
 import link.locutus.discord.commands.manager.v2.impl.pw.filter.NationPlaceholders;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.stock.Exchange;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
+import link.locutus.discord.db.NationDB;
 import link.locutus.discord.db.TradeDB;
-import link.locutus.discord.db.entities.Coalition;
-import link.locutus.discord.db.entities.DBAlliance;
-import link.locutus.discord.db.entities.DBNation;
-import link.locutus.discord.db.entities.DBTrade;
-import link.locutus.discord.db.entities.Transaction2;
+import link.locutus.discord.db.entities.*;
 import link.locutus.discord.db.guild.GuildKey;
 import link.locutus.discord.pnw.NationOrAllianceOrGuildOrTaxid;
 import link.locutus.discord.util.discord.DiscordUtil;
@@ -75,10 +69,29 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 
-public class PW {
+public final class PW {
 
-    public static class City {
+    public static final class City {
+        public static final class Building {
+            public static int SIZE = 27;
+        }
+        public static int getNukePollution(int nukeTurn) {
+            int pollution = 0;
+            double pollutionMax = 400d;
+            int turnsMax = 11 * 12;
+            long turns = TimeUtil.getTurn() - nukeTurn;
+            if (turns < turnsMax) {
+                double nukePollution = (turnsMax - turns) * pollutionMax / (turnsMax);
+                if (nukePollution > 0) {
+                    pollution += (int) nukePollution;
+                }
+            }
+            return pollution;
+        }
+
         public static class Land {
+            public static final double NEW_CITY_BASE = 250;
+
             public static double calculateLand(double from, double to) {
                 if (from < 0 || from == to) return 0;
                 if (to <= from) return (from - to) * -50;
@@ -98,9 +111,23 @@ public class PW {
 
                 return total;
             }
+
+            public static double calculateLand(double from, double to, boolean ra, boolean aec, boolean ala, boolean gsa, boolean bda) {
+                double factor = 1;
+                if (aec) factor -= 0.05;
+                if (ala) factor -= 0.05;
+                if (ra) {
+                    factor -= 0.05;
+                    if (gsa) factor -= 0.025;
+                    if (bda) factor -= 0.0125;
+                }
+                return PW.City.Land.calculateLand(from, to) * factor;
+            }
         }
 
         public static class Infra {
+            public static final double NEW_CITY_BASE = 10;
+
             private static int getInfraCostCents(double infra) {
                 if (infra <= 4000) {
                     int index = Math.max(0, (int) (infra * 100) - 3000);
@@ -117,20 +144,21 @@ public class PW {
                 return (int) Math.round(100 * (300d + (Math.pow(Math.max(infra_cents - 1000, 2000) * 0.01, (2.2d))) * 0.00140845070422535211267605633803));
             }
 
-            public static double calculateInfra(double from, double to, boolean aec, boolean cfce, boolean urbanization, boolean gsa) {
+            public static double calculateInfra(double from, double to, boolean aec, boolean cfce, boolean urbanization, boolean gsa, boolean bda) {
                 double factor = 1;
                 if (aec) factor -= 0.05;
                 if (cfce) factor -= 0.05;
                 if (urbanization) {
                     factor -= 0.05;
                     if (gsa) factor -= 0.025;
+                    if (bda) factor -= 0.0125;
                 }
                 return calculateInfra(from, to) * (to > from ? factor : 1);
             }
 
             // precompute the cost for first 4k infra
             public static double calculateInfra(double from, double to) {
-                if (from < 0) return 0;
+                if (from < 0) from = 0;
                 if (to <= from) return (from - to) * -150;
                 if (to > 20000) throw new IllegalArgumentException("Infra cannot exceed 10,000 (" + to + ")");
                 long total_cents = 0;
@@ -162,20 +190,8 @@ public class PW {
             }
         }
 
-        public static int getPollution(Predicate<Project> hasProject, Function<Building, Integer> getBuildings, int nuke_turn) {
-            int pollution = 0;
-            if (nuke_turn > 0) {
-                double pollutionMax = 400d;
-                int turnsMax = 11 * 12;
-                long turns = TimeUtil.getTurn() - nuke_turn;
-                if (turns < turnsMax) {
-                    double nukePollution = (turnsMax - turns) * pollutionMax / (turnsMax);
-                    if (nukePollution > 0) {
-                        pollution += (int) nukePollution;
-                    }
-                }
-            }
-            for (Building building : Buildings.POLLUTION_BUILDINGS) {
+        public static int getPollution(Predicate<Project> hasProject, Function<link.locutus.discord.apiv1.enums.city.building.Building, Integer> getBuildings, int pollution) {
+            for (link.locutus.discord.apiv1.enums.city.building.Building building : Buildings.POLLUTION_BUILDINGS) {
                 int amt = getBuildings.apply(building);
                 if (amt == 0) continue;
                 int buildPoll = building.pollution(hasProject);
@@ -186,13 +202,29 @@ public class PW {
             return Math.max(0, pollution);
         }
 
-        public static int getCommerce(Predicate<Project> hasProject, Function<Building, Integer> getBuildings) {
-            int commerce = 0;
-            for (Building building : Buildings.COMMERCE_BUILDINGS) {
+        public static int getCommerce(Predicate<Project> hasProject, Function<link.locutus.discord.apiv1.enums.city.building.Building, Integer> getBuildings, int maxCommerce, int commerce) {
+            for (link.locutus.discord.apiv1.enums.city.building.Building building : Buildings.COMMERCE_BUILDINGS) {
                 int amt = getBuildings.apply(building);
                 if (amt == 0) continue;
-                commerce += amt * ((CommerceBuilding) building).getCommerce();
+                commerce += amt * building.getCommerce();
             }
+            if (hasProject.test(Projects.SPECIALIZED_POLICE_TRAINING_PROGRAM)) {
+                commerce += 4;
+            }
+            if (hasProject.test(Projects.INTERNATIONAL_TRADE_CENTER)) {
+                commerce += 1;
+                if (hasProject.test(Projects.TELECOMMUNICATIONS_SATELLITE)) {
+                    commerce += 2;
+                }
+            }
+            if (commerce > maxCommerce) {
+                commerce = maxCommerce;
+            }
+            return commerce;
+        }
+
+        public static int getCommerce(Predicate<Project> hasProject, Function<link.locutus.discord.apiv1.enums.city.building.Building, Integer> getBuildings) {
+            int commerce = 0;
             int maxCommerce;
             if (hasProject.test(Projects.INTERNATIONAL_TRADE_CENTER)) {
                 if (hasProject.test(Projects.TELECOMMUNICATIONS_SATELLITE)) {
@@ -203,13 +235,10 @@ public class PW {
             } else {
                 maxCommerce = 100;
             }
-            if (commerce > maxCommerce) {
-                commerce = maxCommerce;
-            }
-            return commerce;
+            return getCommerce(hasProject, getBuildings, maxCommerce, commerce);
         }
 
-        public static double getCrime(Predicate<Project> hasProject, Function<Building, Integer> getBuildings, long infra_cents, int commerce) {
+        public static double getCrime(Predicate<Project> hasProject, Function<link.locutus.discord.apiv1.enums.city.building.Building, Integer> getBuildings, long infra_cents, int commerce) {
             int police = getBuildings.apply(Buildings.POLICE_STATION);
             double policeMod;
             if (police > 0) {
@@ -231,9 +260,7 @@ public class PW {
                 for (int ordinal = 0; ordinal < 4; ordinal++) {
                     int amt = city.getBuildingOrdinal(ordinal);
                     if (amt == 0) continue;
-
-                    Building building = Buildings.get(ordinal);
-
+                    link.locutus.discord.apiv1.enums.city.building.Building building = Buildings.get(ordinal);
                     for (int i = 0; i < amt; i++) {
                         if (unpoweredInfra > 0) {
                             profit += ((APowerBuilding) building).consumptionConverted(unpoweredInfra);
@@ -242,11 +269,10 @@ public class PW {
                     }
                     profit += building.profitConverted(continent, rads, hasProject, city, amt);
                 }
-                for (int ordinal = Buildings.GAS_REFINERY.ordinal(); ordinal < Buildings.size(); ordinal++) {
+                for (int ordinal = Buildings.GAS_REFINERY.ordinal(); ordinal < PW.City.Building.SIZE; ordinal++) {
                     int amt = city.getBuildingOrdinal(ordinal);
                     if (amt == 0) continue;
-
-                    Building building = Buildings.get(ordinal);
+                    link.locutus.discord.apiv1.enums.city.building.Building building = Buildings.get(ordinal);
                     profit += building.profitConverted(continent, rads, hasProject, city, amt);
                 }
             }
@@ -255,16 +281,15 @@ public class PW {
                 int amt = city.getBuildingOrdinal(ordinal);
                 if (amt == 0) continue;
 
-                Building building = Buildings.get(ordinal);
+                link.locutus.discord.apiv1.enums.city.building.Building building = Buildings.get(ordinal);
                 profit += building.profitConverted(continent, rads, hasProject, city, amt);
             }
 
             int commerce = powered ? city.calcCommerce(hasProject) : 0;
 
-            double newPlayerBonus = numCities < 10 ? Math.max(1, (200d - ((numCities - 1) * 10d)) * 0.01) : 1;
+            double newPlayerBonus = 1 + Math.max(1 - (numCities - 1) * 0.05, 0);
 
             double income = Math.max(0, (((commerce * 0.02) * 0.725) + 0.725) * city.calcPopulation(hasProject) * newPlayerBonus) * grossModifier;;
-
 
             profit += income;
 
@@ -300,16 +325,15 @@ public class PW {
             }
 
             int unpoweredInfra = (int) Math.ceil(city.getInfra());
-            for (Building building : Buildings.values()) {
+            for (link.locutus.discord.apiv1.enums.city.building.Building building : Buildings.values()) {
                 int amt = city.getBuilding(building);
                 if (amt == 0) continue;
-
                 if (!powered) {
                     if (building instanceof CommerceBuilding || building instanceof MilitaryBuilding || (building instanceof ResourceBuilding && ((AResourceBuilding) building).getResourceProduced().isManufactured())) {
                         continue;
                     }
                 }
-                profitBuffer = building.profit(continent, rads, date, hasProject, city, profitBuffer, turns);
+                profitBuffer = building.profit(continent, rads, date, hasProject, city, profitBuffer, turns, amt);
                 if (building instanceof APowerBuilding) {
                     for (int i = 0; i < amt; i++) {
                         if (unpoweredInfra > 0) {
@@ -322,7 +346,7 @@ public class PW {
             int commerce = city.calcCommerce(hasProject);
             double newPlayerBonus = 1 + Math.max(1 - (numCities - 1) * 0.05, 0);
 
-            double income = (((commerce/50d) * 0.725d) + 0.725d) * city.calcPopulation(hasProject) * newPlayerBonus * grossModifier;
+            double income = (((commerce * 0.02d) * 0.725d) + 0.725d) * city.calcPopulation(hasProject) * newPlayerBonus * grossModifier;
 
             profitBuffer[ResourceType.MONEY.ordinal()] += income * turns / 12;
 
@@ -333,7 +357,7 @@ public class PW {
             return profitBuffer;
         }
 
-        public static double getDisease(Predicate<Project> hasProject, Function<Building, Integer> getBuildings, long infra_cents, long land_cents, double pollution) {
+        public static double getDisease(Predicate<Project> hasProject, Function<link.locutus.discord.apiv1.enums.city.building.Building, Integer> getBuildings, long infra_cents, long land_cents, double pollution) {
             int hospitals = getBuildings.apply(Buildings.HOSPITAL);
             double hospitalModifier;
             if (hospitals > 0) {
@@ -357,7 +381,8 @@ public class PW {
                     nation != null && nation.hasProject(Projects.URBAN_PLANNING),
                     nation != null && nation.hasProject(Projects.ADVANCED_URBAN_PLANNING),
                     nation != null && nation.hasProject(Projects.METROPOLITAN_PLANNING),
-                    nation != null && nation.hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY));
+                    nation != null && nation.hasProject(Projects.GOVERNMENT_SUPPORT_AGENCY),
+                    nation != null && nation.hasProject(Projects.BUREAU_OF_DOMESTIC_AFFAIRS));
         }
 
         public static int getPopulation(long infra_cents, double crime, double disease, long ageDays) {
@@ -368,19 +393,19 @@ public class PW {
             return (int) Math.round(Math.max(10, ((infra_cents - diseaseDeaths - crimeDeaths) * ageBonus)));
         }
 
-        public static double cityCost(int from, int to, boolean manifestDestiny, boolean cityPlanning, boolean advCityPlanning, boolean metPlanning, boolean govSupportAgency) {
+        public static double cityCost(int from, int to, boolean manifestDestiny, boolean cityPlanning, boolean advCityPlanning, boolean metPlanning, boolean govSupportAgency, boolean bureauOfDomesticAffairs) {
             double total = 0;
             for (int city = Math.max(1, from); city < to; city++) {
                 total += nextCityCost(city,
                         manifestDestiny,
                         cityPlanning,
                         advCityPlanning,
-                        metPlanning, govSupportAgency);
+                        metPlanning, govSupportAgency, bureauOfDomesticAffairs);
             }
             return total;
         }
 
-        public static double nextCityCost(int currentCity, boolean manifestDestiny, boolean cityPlanning, boolean advCityPlanning, boolean metPlanning, boolean govSupportAgency) {
+        public static double nextCityCost(int currentCity, boolean manifestDestiny, boolean cityPlanning, boolean advCityPlanning, boolean metPlanning, boolean govSupportAgency, boolean bureauOfDomesticAffairs) {
             double cost = 50000*Math.pow(currentCity - 1, 3) + 150000 * (currentCity) + 75000;
             if (cityPlanning) {
                 cost -= 50000000;
@@ -394,6 +419,7 @@ public class PW {
             if (manifestDestiny) {
                 double factor = 0.05;
                 if (govSupportAgency) factor += 0.025;
+                if (bureauOfDomesticAffairs) factor += 0.0125;
                 cost *= (1 - factor);
             }
             return Math.max(0, cost);
@@ -763,7 +789,7 @@ public class PW {
                 if (isMin) {
                     range = Math.round(scoreInt / PW.WAR_RANGE_MAX_MODIFIER);
                 } else {
-                    range = Math.round(scoreInt / 0.75);
+                    range = Math.round(scoreInt / PW.WAR_RANGE_MIN_MODIFIER);
                 }
             } else {
                 if (isMin) {
@@ -1187,6 +1213,39 @@ public class PW {
         };
     }
 
+    public static double estimateScore(NationDB db, DBNation nation) {
+        return estimateScore(db, nation, null, null, null, null);
+    }
+
+    public static double estimateScore(NationDB db, DBNation nation, MMRDouble mmr, Double infra, Integer projects, Integer cities) {
+        if (projects == null) projects = nation.getNumProjects();
+        if (infra == null) {
+            infra = 0d;
+            for (DBCity city : db.getCitiesV3(nation.getNation_id()).values()) {
+                infra += city.getInfra();
+            }
+        }
+        if (cities == null) cities = nation.getCities();
+
+        double base = 10;
+        base += projects * Projects.getScore();
+        base += (cities - 1) * 100;
+        base += infra / 40d;
+        for (MilitaryUnit unit : MilitaryUnit.values) {
+            if (unit == MilitaryUnit.INFRASTRUCTURE) continue;
+            int amt;
+            if (mmr != null && unit.getBuilding() != null) {
+                amt = (int) (mmr.getPercent(unit) * unit.getBuilding().getUnitCap() * unit.getBuilding().cap(f -> false) * cities);
+            } else {
+                amt = nation.getUnits(unit);
+            }
+            if (amt > 0) {
+                base += unit.getScore(amt);
+            }
+        }
+        return base;
+    }
+
     public static BiFunction<Double, Double, Integer> getIsNationsInScoreRange(Collection<DBNation> attackers) {
         int minScore = Integer.MAX_VALUE;
         int maxScore = 0;
@@ -1313,14 +1372,13 @@ public class PW {
         return aaIds;
     }
 
-    public static Map<MilitaryUnit, Long> parseUnits(String arg) {
+    public static <E extends Enum<E>, V extends Number> Map<E, V> parseEnumMap(String arg, Class<E> enumClass, Class<V> valueClass) {
         arg = arg.trim();
         if (!arg.contains(":") && !arg.contains("=")) arg = arg.replaceAll("[ ]+", ":");
         arg = arg.replace(" ", "").replace('=', ':').replaceAll("([0-9]),([0-9])", "$1$2").toUpperCase();
-        for (MilitaryUnit unit : MilitaryUnit.values()) {
-            String name = unit.getName();
-            if (name == null || name.equalsIgnoreCase(unit.name())) continue;
-            arg = arg.replace(name.toUpperCase() + ":", unit.name() + ":");
+        for (E unit : enumClass.getEnumConstants()) {
+            String name = unit.name();
+            arg = arg.replace(name.toUpperCase() + ":", name + ":");
         }
 
         double sign = 1;
@@ -1333,39 +1391,56 @@ public class PW {
         if (preMultiply != -1) {
             String[] split = arg.split("\\*\\{", 2);
             arg = "{" + split[1];
-            sign *= MathMan.parseDouble(split[0]);
+            sign *= Double.parseDouble(split[0]);
         }
         if (postMultiply != -1) {
             String[] split = arg.split("\\}\\*", 2);
             arg = split[0] + "}";
-            sign *= MathMan.parseDouble(split[1]);
+            sign *= Double.parseDouble(split[1]);
         }
 
-        Type type = new TypeToken<Map<MilitaryUnit, Long>>() {}.getType();
+        Type type = com.google.gson.reflect.TypeToken.getParameterized(Map.class, enumClass, valueClass).getType();
         if (arg.charAt(0) != '{' && arg.charAt(arg.length() - 1) != '}') {
             arg = "{" + arg + "}";
         }
-        Map<MilitaryUnit, Long> result = new Gson().fromJson(arg, type);
+        Map<E, V> result = new Gson().fromJson(arg, type);
         if (result.containsKey(null)) {
             throw new IllegalArgumentException("Invalid resource type specified in map: `" + arg + "`");
         }
         if (sign != 1) {
-            for (Map.Entry<MilitaryUnit, Long> entry : result.entrySet()) {
-                entry.setValue((long) (entry.getValue() * sign));
+            for (Map.Entry<E, V> entry : result.entrySet()) {
+                entry.setValue(multiply(entry.getValue(), sign, valueClass));
             }
         }
         return result;
     }
 
-    public static Map<String, String> parseMap(String arg) {
-        arg = arg.trim();
-        if (!arg.contains(":") && !arg.contains("=")) arg = arg.replaceAll("[ ]+", ":");
-        arg = arg.replace(" ", "").replace('=', ':');
-
-        Type type = new TypeToken<Map<String, String>>() {}.getType();
-        if (arg.charAt(0) != '{' && arg.charAt(arg.length() - 1) != '}') {
-            arg = "{" + arg + "}";
+    private static <V extends Number> V multiply(V value, double factor, Class<V> valueClass) {
+        if (valueClass == Long.class) {
+            return valueClass.cast((long) (value.longValue() * factor));
+        } else if (valueClass == Double.class) {
+            return valueClass.cast(value.doubleValue() * factor);
+        } else if (valueClass == Integer.class) {
+            return valueClass.cast((int) (value.intValue() * factor));
+        } else {
+            throw new IllegalArgumentException("Unsupported value type: " + valueClass);
         }
+    }
+
+    public static Map<MilitaryUnit, Long> parseUnits(String arg) {
+        return parseEnumMap(arg, MilitaryUnit.class, Long.class);
+    }
+
+    public static Map<String, String> parseMap(String arg) {
+        if (arg.charAt(0) != '{' && arg.charAt(arg.length() - 1) != '}') {
+            arg = arg.trim();
+            if (!arg.contains(":") && !arg.contains("=")) arg = arg.replaceAll("[ ]+", ":");
+            arg = arg.replace(" ", "").replace('=', ':');
+            if (arg.charAt(0) != '{' && arg.charAt(arg.length() - 1) != '}') {
+                arg = "{" + arg + "}";
+            }
+        }
+        Type type = new TypeToken<Map<String, String>>() {}.getType();
         Map<String, String> result = new Gson().fromJson(arg, type);
         if (result.containsKey(null)) {
             throw new IllegalArgumentException("Invalid type specified in map: `" + arg + "`");

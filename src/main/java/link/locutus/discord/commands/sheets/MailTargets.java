@@ -4,6 +4,8 @@ import link.locutus.discord.Locutus;
 import link.locutus.discord.apiv1.core.ApiKeyPool;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
+import link.locutus.discord.commands.manager.v2.command.CommandBehavior;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
@@ -11,6 +13,7 @@ import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBNation;
 import link.locutus.discord.db.guild.GuildKey;
+import link.locutus.discord.gpt.GPTUtil;
 import link.locutus.discord.pnw.Spyop;
 import link.locutus.discord.user.Roles;
 import link.locutus.discord.util.*;
@@ -36,6 +39,11 @@ import java.util.concurrent.ExecutionException;
 public class MailTargets extends Command {
     public MailTargets() {
         super(CommandCategory.MILCOM, CommandCategory.GAME_INFO_AND_TOOLS, CommandCategory.GOV);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.mail.targets.cmd);
     }
 
     @Override
@@ -101,6 +109,9 @@ public class MailTargets extends Command {
             header = args.get(3);
 
             if (!Roles.MAIL.has(author, guild)) return "You need the MAIL role on discord (see " + CM.role.setAlias.cmd.toSlashMention() + ") to add the custom message: `" + header + "`";
+        }
+        if(header != null && !header.isEmpty()) {
+            GPTUtil.checkThrowModeration(header);
         }
 
         Map<DBNation, Set<DBNation>> warAttDefMap = BlitzGenerator.reverse(warDefAttMap);
@@ -236,7 +247,6 @@ public class MailTargets extends Command {
 
         if (!flags.contains('f')) {
             String title = totalWarTargets + " wars & " + totalSpyTargets + " spyops";
-            String pending = Settings.commandPrefix(true) + "pending '" + title + "' " + DiscordUtil.trimContent(fullCommandRaw) + " -f";
 
             Set<Integer> alliances = new LinkedHashSet<>();
             for (DBNation nation : mailTargets.keySet()) alliances.add(nation.getAlliance_id());
@@ -246,8 +256,9 @@ public class MailTargets extends Command {
             StringBuilder body = new StringBuilder();
             body.append("subject: " + subject + "\n");
 
+            String cmd = DiscordUtil.trimContent(fullCommandRaw) + " -f";
             channel.create().embed(embedTitle, body.toString())
-                    .commandButton(pending, "Next").send();
+                    .commandButton(cmd, "Confirm").send();
             return author.getAsMention();
         }
 

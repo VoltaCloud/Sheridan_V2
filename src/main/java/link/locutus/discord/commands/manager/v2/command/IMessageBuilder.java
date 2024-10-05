@@ -1,13 +1,15 @@
 package link.locutus.discord.commands.manager.v2.command;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import de.vandermeer.asciitable.AT_Context;
 import de.vandermeer.asciitable.AsciiTable;
 import link.locutus.discord.Locutus;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
-import link.locutus.discord.commands.rankings.table.TableNumberFormat;
-import link.locutus.discord.commands.rankings.table.TimeFormat;
-import link.locutus.discord.commands.rankings.table.TimeNumericTable;
+import link.locutus.discord.commands.manager.v2.table.TableNumberFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeNumericTable;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.util.RateLimitUtil;
 import link.locutus.discord.util.StringMan;
@@ -18,17 +20,56 @@ import org.json.JSONObject;
 
 import javax.annotation.CheckReturnValue;
 import java.nio.charset.StandardCharsets;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public interface IMessageBuilder {
+    public record GraphMessageInfo(TimeNumericTable table, TimeFormat timeFormat, TableNumberFormat numberFormat, long origin) {
+        public static GraphMessageInfo fromJson(JsonObject tableObj) {
+            TimeNumericTable<?> table = new TimeNumericTable<>(tableObj) {
+                @Override
+                public void add(long day, Object ignore) {
+                }
+            };
+            TimeFormat timeFormat = TimeFormat.valueOf(tableObj.get("timeFormat").getAsString());
+            TableNumberFormat numberFormat = TableNumberFormat.valueOf(tableObj.get("numberFormat").getAsString());
+            long origin = tableObj.get("origin").getAsLong();
+            return new GraphMessageInfo(table, timeFormat, numberFormat, origin);
+        }
+    }
+
+    public abstract String getContent();
+
+    public abstract Map<String, String> getButtons();
+
+    public Map<String, String> getLinks();
+
+    public List<GraphMessageInfo> getTables();
+
+    public Map<String, byte[]> getImages();
+
+    public Map<String, byte[]> getFiles();
+
+    static JsonElement toJson(String appendText, List<? extends IMessageBuilder> messages, boolean includeFiles, boolean includeButtons, boolean includeTables) {
+        Map<String, Object> root = new LinkedHashMap<>();
+        if (appendText != null && !appendText.isEmpty()) root.put("content", appendText);
+        if (messages != null) {
+            for (IMessageBuilder message : messages) {
+                message.addJson(root, includeFiles, includeButtons, includeTables);
+            }
+        }
+        return StringMan.toJson(root);
+    }
+
+    public abstract void addJson(Map<String, Object> root, boolean includeFiles, boolean includeButtons, boolean includeTables);
+
+    default JsonElement toJson() {
+        Map<String, Object> root = new LinkedHashMap<>();
+        addJson(root, true, true, true);
+        return StringMan.toJson(root);
+    }
+
     long getId();
 
     IMessageBuilder clear();
@@ -80,9 +121,35 @@ public interface IMessageBuilder {
             arguments = arguments.entrySet().stream().collect(Collectors.toMap(e -> e.getKey().toLowerCase(Locale.ROOT),
                     Map.Entry::getValue, (a, b) -> b, LinkedHashMap::new));
             String argumentJson = arguments.isEmpty() ? null : new Gson().toJson(arguments);
-            CM.modal.create attach = CM.modal.create.cmd.create(path, StringMan.join(promptFor, ","), argumentJson);
+            CM.modal.create attach = CM.modal.create.cmd.command(path).arguments(StringMan.join(promptFor, ",")).defaults(argumentJson);
             return commandButton(behavior, attach, message);
         }
+
+    default String toSimpleMarkdown() {
+        StringBuilder markdown = new StringBuilder();
+        markdown.append(getContent()).append("\n");
+        for (MessageEmbed embed : getEmbeds()) {
+            String title = embed.getTitle();
+            String description = embed.getDescription();
+            String footerText = null;
+            MessageEmbed.Footer footer = embed.getFooter();
+            if (footer != null) {
+                footerText = footer.getText();
+            }
+            List<MessageEmbed.Field> fields = embed.getFields();
+            markdown.append("## ").append(title).append("\n");
+            markdown.append(">>> ").append(description).append("\n");
+            if (fields != null && !fields.isEmpty()) {
+                for (MessageEmbed.Field field : fields) {
+                    markdown.append("> **").append(field.getName()).append("**: ").append(field.getValue()).append("\n");
+                }
+            }
+            if (footerText != null && !footerText.isEmpty()) {
+                markdown.append("> _").append(footerText).append("_\n");
+            }
+        }
+        return markdown.toString();
+    }
 
     @CheckReturnValue
     default IMessageBuilder commandButton(CommandBehavior behavior, CommandRef ref, String message) {
@@ -115,7 +182,7 @@ public interface IMessageBuilder {
 
     @CheckReturnValue
     default IMessageBuilder modalLegacy(CommandBehavior behavior, CommandRef ref, String message) {
-        CM.fun.say say = CM.fun.say.cmd.create(behavior.getValue() + ref.toSlashCommand());
+        CM.fun.say say = CM.fun.say.cmd.msg(behavior.getValue() + ref.toSlashCommand());
         commandButton(behavior, say, message);
         return this;
     }
@@ -354,6 +421,11 @@ public interface IMessageBuilder {
     @CheckReturnValue
     default IMessageBuilder cancelButton() {
         return commandButton(CommandBehavior.DELETE_MESSAGE, " ", "Cancel");
+    }
+
+    @CheckReturnValue
+    default IMessageBuilder cancelButton(String label) {
+        return commandButton(CommandBehavior.DELETE_MESSAGE, " ", label);
     }
 
     @CheckReturnValue

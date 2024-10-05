@@ -2,6 +2,7 @@ package link.locutus.discord.commands.manager.v2.command;
 
 import com.google.gson.JsonObject;
 import gg.jte.generated.precompiled.command.JtecommandgroupGenerated;
+import link.locutus.discord.Logg;
 import link.locutus.discord.commands.manager.v2.binding.ValueStore;
 import link.locutus.discord.commands.manager.v2.binding.WebStore;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Arg;
@@ -36,22 +37,12 @@ public class CommandGroup implements ICommandGroup {
         this.aliases = Arrays.asList(aliases);
     }
 
-    public JsonObject generateSiteMap() {
+    @Override
+    public JsonObject toJson(PermissionHandler permHandler, boolean includeReturnType) {
         JsonObject root = new JsonObject();
-        getParametricCallables(f -> {
-            String fullPath = f.getFullPath();
-            String[] split = fullPath.split(" ");
-            JsonObject current = root;
-            for (int i = 0; i < split.length - 1; i++) {
-                String s = split[i];
-                if (!current.has(s)) {
-                    current.add(s, new JsonObject());
-                }
-                current = current.getAsJsonObject(s);
-            }
-            current.addProperty(split[split.length - 1], "");
-            return false;
-        });
+        for (Map.Entry<String, CommandCallable> entry : subcommands.entrySet()) {
+            root.add(entry.getKey(), entry.getValue().toJson(permHandler, includeReturnType));
+        }
         return root;
     }
 
@@ -148,7 +139,9 @@ public class CommandGroup implements ICommandGroup {
 
     public void registerMethod(Object object, List<String> path, String methodName, String commandName) {
         Method found = null;
-        for (Method method : object.getClass().getDeclaredMethods()) {
+        Class<?> clazz = object.getClass();
+        for (Method method : clazz.getMethods()) {
+            if (method.getDeclaringClass() != clazz) continue;
             if (method.getName().equals(methodName)) {
                 if (found != null) throw new IllegalStateException("Duplicate method found for: " + methodName);
                 found = method;
@@ -187,13 +180,15 @@ public class CommandGroup implements ICommandGroup {
     @Override
     public Object call(ArgumentStack stack) {
         if (!stack.hasNext()) {
-            throw new CommandUsageException(this, "No subcommand specified");
+            String prefix = "/" + getFullPath();
+            throw new CommandUsageException(this, "No subcommand specified (2). Valid subcommands\n" +
+                    "- `" + prefix + StringMan.join(primarySubCommandIds(), "`\n- `" + prefix) + "`");
         }
         String arg = stack.consumeNext();
         CommandCallable subcommand = subcommands.get(arg.toLowerCase());
         if (subcommand == null) {
             throw new CommandUsageException(this, "Invalid subcommand: `" + arg + "`\n" +
-                    "Valid subcommands: " + StringMan.join(primarySubCommandIds(), ", "));
+                    "Valid subcommands:\n- " + StringMan.join(primarySubCommandIds(), "\n- "));
         }
         return subcommand.call(stack);
     }
@@ -360,13 +355,15 @@ public class CommandGroup implements ICommandGroup {
                     try {
                         return f.newInstance();
                     } catch (InstantiationException | IllegalAccessException e) {
-                        System.out.println("Failed to instantiate " + f.getName() + " for " + clazz.getName() + " | " + methodInfo.method());
+                        Logg.text("Failed to instantiate " + f.getName() + " for " + clazz.getName() + " | " + methodInfo.method());
                         throw new RuntimeException(e);
                     }
                 });
             }
             Method found = null;
-            for (Method method : instance.getClass().getDeclaredMethods()) {
+            Class<? extends Object> methClazz = instance.getClass();
+            for (Method method : methClazz.getMethods()) {
+                if (method.getDeclaringClass() != methClazz) continue;
                 if (method.getName().equalsIgnoreCase(methodInfo.method()) && method.getAnnotation(Command.class) != null) {
                     if (found != null)
                         throw new IllegalStateException("Duplicate method found in " + methodInfo.clazz().getName() + " for " + methodInfo.method());
@@ -393,16 +390,24 @@ public class CommandGroup implements ICommandGroup {
 
             try {
                 CommandRef ref = (CommandRef) clazz.getDeclaredField("cmd").get(null);
-                Method create = ref.getClass().getDeclaredMethods()[0];
-                for (Parameter parameter : create.getParameters()) {
-                    String name = parameter.getName().toLowerCase(Locale.ROOT);
-                    if (userParamsLower.contains(name)) continue;
-                    // replace camelCase with under_case
-                    String nameUnder = parameter.getName().replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase(Locale.ROOT);
-                    if (userParamsLower.contains(nameUnder)) continue;
-                    System.out.println("Missing parameter `" + name + "` for " + methodInfo.clazz().getSimpleName() + " | " + methodInfo.method() + " | " + methodInfo.field() + " | " + clazz.getSimpleName() + " | " + callable.getUserParameterMap().keySet());
+                Set<String> argsPresent = new LinkedHashSet<>();
+                Class<? extends CommandRef> refClazz = ref.getClass();
+                for (Method method : refClazz.getMethods()) {
+                    if (method.getDeclaringClass() != refClazz) continue;
+                    if (method.getReturnType().equals(ref.getClass()) && method.getParameterCount() == 1 && method.getParameterTypes()[0].equals(String.class)) {
+                        argsPresent.add(method.getName().toLowerCase(Locale.ROOT));
+                    }
                 }
-
+                for (String arg : userParamsLower) {
+                    if (!argsPresent.contains(arg)) {
+                        System.out.println("Missing method for " + methodInfo.clazz().getSimpleName() + " | " + methodInfo.method() + " | " + methodInfo.field() + " | " + clazz.getSimpleName() + " | " + arg);
+                    }
+                }
+                for (String arg : argsPresent) {
+                    if (!userParamsLower.contains(arg)) {
+                        System.out.println("Missing parameter (2) for " + methodInfo.clazz().getSimpleName() + " | " + methodInfo.method() + " | " + methodInfo.field() + " | " + clazz.getSimpleName() + " | " + arg);
+                    }
+                }
             } catch (IllegalAccessException | NoSuchFieldException e) {
                 throw new RuntimeException(e);
             }
@@ -433,7 +438,8 @@ public class CommandGroup implements ICommandGroup {
         for (Class clazz : classes) {
             // get methods with @Command annotation
             // Add any missing methods to missing methods
-            for (Method declaredMethod : clazz.getDeclaredMethods()) {
+            for (Method declaredMethod : clazz.getMethods()) {
+                if (declaredMethod.getDeclaringClass() != clazz) continue;
                 if (declaredMethod.getAnnotation(Command.class) == null) continue;
                 if (!methods.contains(declaredMethod)) {
                     missingMethods.computeIfAbsent(clazz, f -> new ArrayList<>()).add(declaredMethod);

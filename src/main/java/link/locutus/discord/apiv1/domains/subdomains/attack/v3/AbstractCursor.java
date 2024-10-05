@@ -8,6 +8,7 @@ import link.locutus.discord.apiv1.enums.MilitaryUnit;
 import link.locutus.discord.apiv1.enums.ResourceType;
 import link.locutus.discord.apiv1.enums.SuccessType;
 import link.locutus.discord.apiv1.enums.city.building.Building;
+import link.locutus.discord.db.WarDB;
 import link.locutus.discord.db.entities.DBWar;
 import link.locutus.discord.util.TimeUtil;
 import link.locutus.discord.util.io.BitBuffer;
@@ -36,7 +37,8 @@ public abstract class AbstractCursor implements IAttack {
     public abstract AttackType getAttack_type();
     @Override
     public abstract SuccessType getSuccess();
-    public void load(WarAttack attack) {
+
+    public void load(WarAttack attack, WarDB db) {
         war_cached = null;
         war_attack_id = attack.getId();
         date = attack.getDate().toEpochMilli();
@@ -117,12 +119,9 @@ public abstract class AbstractCursor implements IAttack {
     }
 
     @Override
-    public DBWar getWar() {
+    public DBWar getWar(WarDB db) {
         if (war_cached == null) {
-            Locutus lc = Locutus.imp();
-            if (lc != null) {
-                war_cached = lc.getWarDb().getWar(war_id);
-            }
+            war_cached = db.getWar(war_id);
         }
         return war_cached;
     }
@@ -136,7 +135,7 @@ public abstract class AbstractCursor implements IAttack {
     @Override
     public double[] getLosses(double[] buffer, boolean attacker, boolean units, boolean infra, boolean consumption, boolean includeLoot, boolean includeBuildings) {
         if (units) {
-            double[] unitLosses = getUnitLossCost(buffer, attacker);
+            getUnitLossCost(buffer, attacker);
         }
         if (includeLoot) {
             double[] loot = getLoot();
@@ -148,11 +147,10 @@ public abstract class AbstractCursor implements IAttack {
                 }
             }
             else if (getMoney_looted() != 0) {
-                int sign = (getVictor() == (attacker ? getAttacker_id() : getDefender_id())) ? -1 : 1;
-                buffer[ResourceType.MONEY.ordinal()] += getMoney_looted() * sign;
+                buffer[ResourceType.MONEY.ordinal()] += attacker ? -getMoney_looted() : getMoney_looted();
             }
         }
-        if (attacker ? getVictor() == getDefender_id() : getVictor() == getAttacker_id()) {
+        if (!attacker) {
             if (infra && getInfra_destroyed_value() != 0) {
                 buffer[ResourceType.MONEY.ordinal()] += getInfra_destroyed_value();
             }

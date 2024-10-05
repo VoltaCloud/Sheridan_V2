@@ -1,6 +1,7 @@
 package link.locutus.discord.config;
 
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.config.yaml.Config;
 
 import java.io.File;
@@ -53,14 +54,15 @@ public class Settings extends Config {
     @Comment("Your P&W password (optional, but recommended)")
     public String PASSWORD = "";
 
-    @Comment("Your P&W verified bot key (optional)")
+    @Comment({"Your P&W verified bot key (optional)",
+            "Needed to perform ingame actions such as banking",
+            "Open a ticket in the Politics And Programming server to obtain a key"})
     public String ACCESS_KEY = "";
 
     @Comment("Your api key (generated if username/password is set)")
     public String API_KEY_PRIMARY = "";
 
-    @Comment({"A list of api keys the bot can use for requests (optional)",
-            "See: `/admin validateApiKeys`"})
+    @Comment({"A list of api keys the bot can use for general requests (optional)"})
     public List<String> API_KEY_POOL = Arrays.asList();
 
     @Comment({"The discord id of the bot (generated)",
@@ -107,7 +109,7 @@ public class Settings extends Config {
         return "https://" + (TEST ? "test." : "") + "politicsandwar.com";
     }
     public int ALLIANCE_ID() {
-        return Locutus.imp().getNationDB().getNation(NATION_ID).getAlliance_id();
+        return Locutus.imp().getNationDB().getNation(Locutus.loader().getNationId()).getAlliance_id();
     }
 
     public static class ENABLED_COMPONENTS {
@@ -118,6 +120,9 @@ public class Settings extends Config {
         public boolean MESSAGE_COMMANDS = true;
         @Comment("If slash `/` commands are enabled (WIP)")
         public boolean SLASH_COMMANDS = true;
+        @Comment({"If bot admin only slash commands are registered with discord",
+        "If false, you can still use them by mentioning the bot"})
+        public boolean REGISTER_ADMIN_SLASH_COMMANDS = true;
         @Comment({"If the web interface is enabled",
                 "- If enabled, also configure the web section below"
         })
@@ -176,12 +181,12 @@ public class Settings extends Config {
     public static class TASKS {
         @Comment("If any turn related tasks are run (default: true)")
         public boolean ENABLE_TURN_TASKS = true;
-
-        @Comment("Fetches most active wars and then attacks (default: 1 minute)")
-        public int ACTIVE_WAR_SECONDS = 60;
+//
+//        @Comment("Fetches most active wars and then attacks (default: 1 minute)")
+//        public int ACTIVE_WAR_SECONDS = 60;
 
         @Comment("Fetches all wars (default 5 minutes)")
-        public int ALL_WAR_SECONDS = 60 * 5;
+        public int ALL_WAR_SECONDS = 60;
 
         @Comment({"If attacks for completed wars are loaded into memory", "Ignored if load-active-attacks is disabled"})
         public boolean LOAD_INACTIVE_ATTACKS = false;
@@ -195,21 +200,20 @@ public class Settings extends Config {
         })
         public int UNLOAD_WARS_AFTER_TURNS = -1;
 //
-//        @Comment({"If escalation alerts are run every time all wars are updated",
-//                "Requires ALL_WAR_SECONDS to be enabled"})
-//        public boolean ESCALATION_ALERTS = true;
+        @Comment("Fetches most active nations (default disabled)")
+        public int ACTIVE_NATION_SECONDS = -1;
 
-        @Comment("Fetches most active nations (default 1 minute)")
-        public int ACTIVE_NATION_SECONDS = 60;
-
-        @Comment("Fetches colored nations (default 5 minutes)")
-        public int COLORED_NATIONS_SECONDS = 60 * 5;
+        @Comment("Fetches colored nations (default disabled)")
+        public int COLORED_NATIONS_SECONDS = -1;
 
         @Comment("Fetches non Vacation Mode nations (default 15 minutes)")
-        public int ALL_NON_VM_NATIONS_SECONDS = 60 * 15;
+        public int ALL_NATIONS_SECONDS = 60 * 15;
 
-        @Comment("Fetches outdated cities (default 5 minute)")
-        public int OUTDATED_CITIES_SECONDS = 60 * 5;
+        @Comment("Fetches outdated cities (default disabled)")
+        public int OUTDATED_CITIES_SECONDS = -1;
+
+        @Comment("Fetches outdated cities (default 30 minute)")
+        public int ALL_CITIES_SECONDS = 60 * 30;
 
         @Comment("Runs the pre update beige reminders (default: 61 seconds)")
         public int BEIGE_REMINDER_SECONDS = 61;
@@ -340,35 +344,9 @@ public class Settings extends Config {
     public static class LEGACY_SETTINGS {
         @Final
         @Ignore
-        @Comment("Open browser window when these ppl do attacks")
-        public List<Integer> ATTACKER_DESKTOP_ALERTS = new ArrayList<>();
-
-        @Final
-        @Ignore
         @Comment("Timestamp for when marked deposits were introduced")
         public long MARKED_DEPOSITS_DATE = 1622661922L * 1000L;
 
-        @Final
-        @Ignore
-        public boolean OPEN_DESKTOP_FOR_CAPTCHA = false;
-
-        @Final
-        @Ignore
-        public boolean OPEN_DESKTOP_FOR_MISTRADES = false;
-
-        @Final
-        @Ignore
-        public boolean OPEN_DESKTOP_FOR_RAIDS = false;
-
-        @Final
-        @Ignore
-        @Deprecated
-        @Comment("Access key for P&W (deprecated)")
-        public String ACCESS_KEY = "";
-        @Final
-        @Ignore // disabled (not super accurate and not fair)
-        @Deprecated
-        public boolean DEANONYMIZE_SPYOPS = false;
         @Final
         @Ignore // disabled (not super accurate and not fair)
         @Deprecated
@@ -377,6 +355,26 @@ public class Settings extends Config {
         @Deprecated
         @Comment("Can bypass the normal transfer cap")
         public List<Long> WHITELISTED_BANK_USERS = Arrays.asList();
+
+        @Deprecated
+        @Comment("Reduce the appearance of these always online nations for espionage alerts (if causing false positives)")
+        public List<Integer> ESPIONAGE_ALWAYS_ONLINE = Arrays.asList();
+
+        @Deprecated
+        @Comment("Reduce the appearance of these always online nations for espionage alerts (if causing false positives)")
+        public List<Integer> ESPIONAGE_ALWAYS_ONLINE_AA = Arrays.asList();
+
+        @Ignore
+        @Final
+        @Comment("Print the binding types which lack an autocomplete\n" +
+                "Disabled by default, as its normal for some types not to have completion")
+        public boolean PRINT_MISSING_AUTOCOMPLETE = false;
+
+        @Ignore
+        @Final
+        @Comment("Print the espionage debug information\n" +
+                "Disabled by default, as it is verbose")
+        public boolean PRINT_ESPIONAGE_DEBUG = false;
     }
 
 
@@ -498,6 +496,12 @@ public class Settings extends Config {
 
             @Comment("Name of AWS S3 bucket (e.g. `locutus`)")
             public String BUCKET = "";
+
+            @Comment({
+                    "The frontend url for war stats",
+                    "Not hosted locally, see: <https://github.com/xdnw/lc_stats_svelte/> (github pages)"
+            })
+            public String SITE = "https://wars.locutus.link";
         }
         @Comment("The cosmetic name of the web interface")
         public String INTERFACE_NAME = "Locutus";

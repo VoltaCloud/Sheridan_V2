@@ -36,6 +36,7 @@ import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.exceptions.ErrorResponseException;
+import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -176,7 +177,7 @@ public class IACategory {
                     public void accept(List<Message> messages, Throwable throwable) {
                         if (messages == null) {
                             throwable.printStackTrace();
-                            AlertUtil.error("Cannot fetch message", StringMan.stacktraceToString(throwable) + "<@" + Settings.INSTANCE.ADMIN_USER_ID + ">");
+                            AlertUtil.error("Cannot fetch message", StringMan.stacktraceToString(throwable) + "<@" + Locutus.loader().getAdminUserId() + ">");
                             db.updateInterviewMessageDate(channelId);
                             return;
                         }
@@ -250,7 +251,12 @@ public class IACategory {
             channelName = user.getName();
         }
 
-        TextChannel channel = RateLimitUtil.complete(category.createTextChannel(channelName));
+        TextChannel channel;
+        try {
+            channel = RateLimitUtil.complete(category.createTextChannel(channelName));
+        } catch (InsufficientPermissionException e) {
+            throw new InsufficientPermissionException(guild, Permission.VIEW_CHANNEL, "Cannot create channel in " + category.getName());
+        }
         if (channel == null) {
             if (guild.getCategoryById(category.getIdLong()) == null) {
                 fetchChannels();
@@ -446,7 +452,7 @@ public class IACategory {
 
                     body.append("\n\nPress `" + emoji + "` to delete");
                     output.create().embed( "Interview not assigned to a member", body.toString())
-                                    .commandButton(CM.channel.delete.current.cmd.create(channel.getAsMention()), emoji)
+                                    .commandButton(CM.channel.delete.current.cmd.channel(channel.getAsMention()), emoji)
                                             .send();
 
                     if (nation != null && ((nation.active_m() > 7200) || (nation.active_m() > 2880 && (nation.getCities() < 10 || nation.getPosition() <= 1 || !alliance.contains(nation.getAlliance_id()))))) {
@@ -526,7 +532,7 @@ public class IACategory {
         Member member = null;
         for (PermissionOverride override : overrides) {
             if (override.getMember() != null) {
-                if (override.getMember().getIdLong() == Settings.INSTANCE.ADMIN_USER_ID) continue;
+                if (override.getMember().getIdLong() == Locutus.loader().getAdminUserId()) continue;
                 if (member != null) {
                     return null;
                 }

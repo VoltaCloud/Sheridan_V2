@@ -3,17 +3,18 @@ package link.locutus.discord.db;
 import com.google.common.eventbus.AsyncEventBus;
 import it.unimi.dsi.fastutil.ints.IntArraySet;
 import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
 import link.locutus.discord.apiv1.core.ApiKeyPool;
 import link.locutus.discord.apiv1.enums.AccessType;
 import link.locutus.discord.apiv1.enums.DepositType;
 import link.locutus.discord.apiv3.enums.AlliancePermission;
+import link.locutus.discord.commands.manager.v2.binding.annotation.Command;
 import link.locutus.discord.commands.manager.v2.binding.annotation.Me;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
-import link.locutus.discord.commands.war.WarCategory;
-import link.locutus.discord.commands.manager.Command;
+import link.locutus.discord.commands.WarCategory;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
-import link.locutus.discord.commands.rankings.builder.RankBuilder;
+import link.locutus.discord.commands.manager.v2.builder.RankBuilder;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.entities.*;
 import link.locutus.discord.db.entities.DBAlliance;
@@ -58,8 +59,10 @@ import link.locutus.discord.apiv1.enums.TreatyType;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
+import net.dv8tion.jda.api.entities.channel.unions.DefaultGuildChannelUnion;
 import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
 
 import javax.annotation.Nullable;
@@ -158,7 +161,7 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
         super("guilds/" + guild.getId());
         this.roleToAccountToDiscord  = new ConcurrentHashMap<>();
         this.guild = guild;
-        System.out.println(guild + " | AA:" + StringMan.getString(getInfo("ALLIANCE_ID", false)));
+        Logg.text(guild + " | AA:" + StringMan.getString(getInfoRaw(GuildKey.ALLIANCE_ID, false)));
         importLegacyRoles();
         PWGPTHandler gpt = Locutus.imp().getCommandManager().getV2().getPwgptHandler();
         if (gpt != null) {
@@ -204,7 +207,6 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
                 if (grantTemplateManager == null) {
                     grantTemplateManager = new GrantTemplateManager(this);
                     try {
-                        System.out.println("Loading grant templates for " + guild.getName());
                         grantTemplateManager.loadTemplates();
                     } catch (SQLException | InvocationTargetException | InstantiationException |
                              IllegalAccessException e) {
@@ -665,6 +667,10 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
         return results;
     }
 
+    public void deleteAllMeta(NationMeta meta) {
+        update("DELETE FROM NATION_META where key = ?", (ThrowingConsumer<PreparedStatement>) stmt -> stmt.setInt(1, meta.ordinal()));
+    }
+
     public ByteBuffer getMeta(long userId, NationMeta key) {
         GuildDB delegate = getDelegateServer();
         if (delegate != null) {
@@ -749,14 +755,25 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
             return null;
         }
         try {
-            List<Invite> invites = RateLimitUtil.complete(guild.retrieveInvites());
-            for (Invite invite : invites) {
-                if (invite.getMaxUses() == 0) {
-                    return invite.getUrl();
-                }
-            }
+            Invite invite = getInvite(false);
+            if (invite != null) return invite.getUrl();
         } catch (RuntimeException ignore) {
             ignore.printStackTrace();
+        }
+        return null;
+    }
+
+    public Invite getInvite(boolean create) {
+        List<Invite> invites = RateLimitUtil.complete(guild.retrieveInvites());
+        for (Invite invite : invites) {
+            if (invite.getMaxUses() == 0) {
+                return invite;
+            }
+        }
+        if (create) {
+            DefaultGuildChannelUnion defChannel = guild.getDefaultChannel();
+            if (defChannel == null) return null;
+            return RateLimitUtil.complete(defChannel.createInvite().setUnique(false).setMaxAge(Integer.MAX_VALUE).setMaxUses(0));
         }
         return null;
     }
@@ -953,7 +970,7 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
             }
             // add date if missing
             if (getTableColumns("NATION_META").stream().noneMatch(c -> c.equalsIgnoreCase("date_updated"))) {
-                executeStmt("ALTER TABLE NATION_META ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis());
+                executeStmt("ALTER TABLE NATION_META ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis(), true);
             }
         };
 
@@ -968,7 +985,7 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
                 e.printStackTrace();
             }
             if (getTableColumns("ROLES2").stream().noneMatch(c -> c.equalsIgnoreCase("date_updated"))) {
-                executeStmt("ALTER TABLE ROLES2 ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis());
+                executeStmt("ALTER TABLE ROLES2 ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis(), true);
             }
             try (Statement stmt = getConnection().createStatement()) {
                 // Check if the table exists
@@ -1000,12 +1017,9 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
 
                     if (rowCount == newRowCount) {
                         stmt.execute("DROP TABLE ROLES2_old");
-                        System.out.println("Primary key added to the ROLES2 table.");
                     } else {
                         System.err.println("Data migration failed. The old table still exists.");
                     }
-                } else {
-                    System.out.println("Primary key already exists in the ROLES2 table.");
                 }
             } catch (SQLException e) {
                 e.printStackTrace();
@@ -1021,21 +1035,11 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
                 e.printStackTrace();
             }
             if (getTableColumns("COALITIONS").stream().noneMatch(c -> c.equalsIgnoreCase("date_updated"))) {
-                executeStmt("ALTER TABLE COALITIONS ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis());
+                executeStmt("ALTER TABLE COALITIONS ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis(), true);
             }
         };
         {
             String create = "CREATE TABLE IF NOT EXISTS `BUILDS` (`category` VARCHAR NOT NULL, `min` INT NOT NULL, `max` INT NOT NULL, `build` VARCHAR NOT NULL, PRIMARY KEY(category, min))";
-            try (Statement stmt = getConnection().createStatement()) {
-                stmt.addBatch(create);
-                stmt.executeBatch();
-                stmt.clearBatch();
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-        };
-        {
-            String create = "CREATE TABLE IF NOT EXISTS `PERMISSIONS` (`permission` VARCHAR NOT NULL PRIMARY KEY, `value` INT NOT NULL)";
             try (Statement stmt = getConnection().createStatement()) {
                 stmt.addBatch(create);
                 stmt.executeBatch();
@@ -1059,12 +1063,12 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
                 executeStmt(updateKey);
             }
             if (getTableColumns("INFO").stream().noneMatch(c -> c.equalsIgnoreCase("date_updated"))) {
-                executeStmt("ALTER TABLE `INFO` ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis());
+                executeStmt("ALTER TABLE `INFO` ADD COLUMN date_updated BIGINT NOT NULL DEFAULT " + System.currentTimeMillis(), true);
             }
-
         };
         createDeletionsTables();
     }
+
 
     public void purgeOldInterviews(long cutoff) {
         update("DELETE FROM INTERVIEW_MESSAGES2 WHERE date_updated < ?", (ThrowingConsumer<PreparedStatement>) stmt -> stmt.setLong(1, cutoff));
@@ -1743,7 +1747,6 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
             }
             if (toSubtract != null) {
                 ammountEach.put(account, toSubtract.clone());
-                System.out.println("Add balance to: " + account.getQualifiedId() + " " + ResourceType.resourcesToString(toSubtract) + "");
                 addTransfer(dateTime, 0, 0, account.getIdLong(), account.getReceiverType(), banker, offshoreNote, toSubtract);
             }
         }
@@ -2024,7 +2027,7 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
             if (warChannel == null) {
                 if (!warChannelInit || throwException) {
                     warChannelInit = true;
-                    boolean allowed = Boolean.TRUE.equals(enabled) || isWhitelisted() || isAllyOfRoot() || getPermission(WarCategory.class) > 0;
+                    boolean allowed = Boolean.TRUE.equals(enabled);
                     if (allowed) {
                         try {
                             warChannel = new WarCategory(guild, "warcat");
@@ -2510,10 +2513,10 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
         return getInfo(key.name(), allowDelegate);
     }
 
-    public <T> void setInfo(GuildSetting<T> key, T value) {
+    public <T> void setInfo(GuildSetting<T> key, User user, T value) {
         checkNotNull(key);
         checkNotNull(value);
-        value = key.validate(this, value);
+        value = key.validate(this, user, value);
         setInfoRaw(key, value);
     }
 
@@ -2617,74 +2620,6 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
                 e.printStackTrace();
             }
             this.info = tmp;
-        }
-    }
-
-    private Map<Class, Integer> permissions;
-
-    public int getPermission(Class perm) {
-        GuildDB delegate = getDelegateServer();
-        if (delegate != null) {
-            return delegate.getPermission(perm);
-        }
-        if (isWhitelisted()) {
-            return 1;
-        }
-        if (permissions == null) initPerms();
-        return permissions.getOrDefault(perm, 0);
-    }
-
-    public Map<Class, Integer> getPermissions() {
-        GuildDB delegate = getDelegateServer();
-        if (delegate != null) {
-            return delegate.getPermissions();
-        }
-        if (permissions == null) initPerms();
-        return this.permissions;
-    }
-
-    private synchronized void initPerms() {
-        if (permissions == null) {
-            ConcurrentHashMap<Class, Integer> tmp = new ConcurrentHashMap<>();
-            Map<String, Class> cmdMap = new HashMap<>();
-            for (Command cmd : Locutus.imp().getCommandManager().getCommandMap().values()) {
-                cmdMap.put(cmd.getClass().getSimpleName().toLowerCase(), cmd.getClass());
-            }
-
-            try (PreparedStatement stmt = prepareQuery("select * FROM PERMISSIONS")) {
-                try (ResultSet rs = stmt.executeQuery()) {
-                    while (rs.next()) {
-                        String clazzName = rs.getString("permission");
-                        Class<?> clazz = cmdMap.get(clazzName.toLowerCase());
-                        if (clazz == null) {
-                            System.out.println("!!Invalid perm: " + clazzName);
-                            continue;
-                        }
-                        int value = rs.getInt("value");
-                        tmp.put(clazz, value);
-                    }
-                }
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-            this.permissions = tmp;
-        }
-    }
-
-    public void setPermission(Class perm, int value) {
-        GuildDB delegate = getDelegateServer();
-        if (delegate != null) {
-            delegate.setPermission(perm, value);
-            return;
-        }
-        checkNotNull(perm);
-        initPerms();
-        synchronized (this) {
-            update("INSERT OR REPLACE INTO `PERMISSIONS`(`permission`, `value`) VALUES(?, ?)", (ThrowingConsumer<PreparedStatement>) stmt -> {
-                stmt.setString(1, perm.getSimpleName());
-                stmt.setInt(2, value);
-            });
-            permissions.put(perm, value);
         }
     }
 
@@ -3220,5 +3155,24 @@ public class GuildDB extends DBMain implements NationOrAllianceOrGuild, GuildOrA
             return guild.getRoleById(mapping);
         }
         return null;
+    }
+
+    ///
+
+    @Command
+    public TextChannel getNotifcationChannel() {
+        TextChannel sendTo = guild.getSystemChannel();
+        if (sendTo != null && !sendTo.canTalk()) sendTo = null;
+        if (sendTo == null) sendTo = guild.getCommunityUpdatesChannel();
+        if (sendTo != null && !sendTo.canTalk()) sendTo = null;
+        if (sendTo == null) sendTo = guild.getRulesChannel();
+        if (sendTo != null && !sendTo.canTalk()) sendTo = null;
+        if (sendTo == null) {
+            DefaultGuildChannelUnion df = guild.getDefaultChannel();
+            if (df != null && df instanceof TextChannel tc && tc.canTalk()) {
+                sendTo = tc;
+            }
+        }
+        return sendTo == null || !sendTo.canTalk() ? null : sendTo;
     }
 }

@@ -93,7 +93,6 @@ public class DiscordChannelIO implements IMessageIO {
     public CompletableFuture<IMessageBuilder> send(IMessageBuilder builder) {
         if (builder instanceof DiscordMessageBuilder discMsg) {
             if (builder.getId() > 0) {
-                System.out.println("Send ");
                 CompletableFuture<Message> future = RateLimitUtil.queue(channel.editMessageById(builder.getId(), discMsg.buildEdit(true)));
                 return future.thenApply(msg -> new DiscordMessageBuilder(this, msg));
             }
@@ -105,38 +104,37 @@ public class DiscordChannelIO implements IMessageIO {
                 discMsg.embeds.clear();
             }
             if (discMsg.content.length() > 2000) {
-                DiscordUtil.sendMessage(channel, discMsg.content.toString());
+                CompletableFuture<List<Message>> future1 = DiscordUtil.sendMessage(channel, discMsg.content.toString().trim());
                 discMsg.content.setLength(0);
             }
             CompletableFuture<IMessageBuilder> msgFuture = null;
             boolean sendFiles = true;
             if (!discMsg.content.isEmpty() || !discMsg.buttons.isEmpty() || !discMsg.embeds.isEmpty()) {
                 MessageCreateData message = discMsg.build(true);
-
                 if (message.getContent().length() > 20000) {
                     Message result = null;
                     if (!discMsg.buttons.isEmpty() || !discMsg.embeds.isEmpty()) {
                         message = discMsg.build(false);
                         result = RateLimitUtil.complete(channel.sendMessage(message));
                     }
-                    CompletableFuture<Message> future = DiscordUtil.sendMessage(channel, discMsg.content.toString());
+                    CompletableFuture<List<Message>> future = DiscordUtil.sendMessage(channel, discMsg.content.toString().trim());
                     if (result != null) {
                         assert future != null;
-                        msgFuture = future.thenApply(f -> new DiscordMessageBuilder(this, f));
+                        msgFuture = future.thenApply(f -> new DiscordMessageBuilder(this, f.getLast()));
                     }
                 } else {
                     sendFiles = false;
-                    CompletableFuture<Message> future =RateLimitUtil.queue(channel.sendMessage(message));
+                    CompletableFuture<Message> future = RateLimitUtil.queue(channel.sendMessage(message));
                     msgFuture = future.thenApply(f -> new DiscordMessageBuilder(this, f));
                 }
-
-
             }
-            if (sendFiles && (!discMsg.files.isEmpty() || !discMsg.images.isEmpty())) {
-                Map<String, byte[]> allFiles = new HashMap<>(discMsg.files);
-                allFiles.putAll(discMsg.images);
+            if (sendFiles && (!discMsg.files.isEmpty() || !discMsg.images.isEmpty() || !discMsg.tables.isEmpty())) {
+                List<Map.Entry<String, byte[]>> allFiles = new ArrayList<>();
+                allFiles.addAll(discMsg.files.entrySet());
+                allFiles.addAll(discMsg.images.entrySet());
+                allFiles.addAll(discMsg.buildTables());
                 Message result = null;
-                for (Map.Entry<String, byte[]> entry : allFiles.entrySet()) {
+                for (Map.Entry<String, byte[]> entry : allFiles) {
                     result = RateLimitUtil.complete(channel.sendFiles(FileUpload.fromData(entry.getValue(), entry.getKey())));
                 }
                 if (result != null && msgFuture == null)
@@ -195,7 +193,7 @@ public class DiscordChannelIO implements IMessageIO {
             String argName = input.getId();
             argList.add(argName);
         }
-        CM.modal.create cmRef = CM.modal.create.cmd.create(cmd, StringMan.join(argList, " "), defaultsStr);
+        CM.modal.create cmRef = CM.modal.create.cmd.command(cmd).arguments(StringMan.join(argList, " ")).defaults(defaultsStr);
         io.create().embed("Form: `" + cmd + "`", cmRef.toSlashCommand(true))
                 .commandButton(cmRef, "Open")
                 .send();

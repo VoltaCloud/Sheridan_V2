@@ -7,9 +7,9 @@ import link.locutus.discord.commands.manager.v2.impl.discord.DiscordChannelIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.NationFilter;
 import link.locutus.discord.commands.manager.v2.impl.pw.TaxRate;
-import link.locutus.discord.commands.rankings.table.TableNumberFormat;
-import link.locutus.discord.commands.rankings.table.TimeFormat;
-import link.locutus.discord.commands.rankings.table.TimeNumericTable;
+import link.locutus.discord.commands.manager.v2.table.TableNumberFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeFormat;
+import link.locutus.discord.commands.manager.v2.table.TimeNumericTable;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.AllianceChange;
 import link.locutus.discord.db.entities.AllianceMeta;
@@ -54,12 +54,12 @@ import java.util.function.BiPredicate;
 public class AllianceListener {
 
     public AllianceListener() {
-        Locutus.imp().addTaskSeconds(new CaughtTask() {
+        Locutus.imp().getRepeatingTasks().addTask("Militarization Alerts", new CaughtTask() {
             @Override
             public void runUnsafe() throws Exception {
                 runMilitarizationAlerts();
             }
-        }, 15);
+        }, 15, TimeUnit.SECONDS);
     }
     @Subscribe
     public void onTurnChange(TurnChangeEvent event) {
@@ -197,7 +197,13 @@ public class AllianceListener {
             long previousMilDate = milDateBuf.remaining() == 4 ? milDateBuf.getInt() : milDateBuf.getLong();
 
             double milGain = groundPctAvg - previousMil;
-            if (milGain < thresholdFivedays) continue;
+            if (milGain < thresholdFivedays) {
+                if (milGain < 0 && now - previousMilDate > TimeUnit.DAYS.toMillis(14)) {
+                    alliance.setMeta(AllianceMeta.GROUND_MILITARIZATION_DATE, now - TimeUnit.DAYS.toMillis(5));
+                    alliance.setMeta(AllianceMeta.GROUND_MILITARIZATION, groundPctAvg);
+                }
+                continue;
+            }
 
             long timeSinceLastAlert = now - previousMilDate;
 
@@ -290,7 +296,7 @@ public class AllianceListener {
 
                 body.append("\n**Press `graph` for 7d ground graph.**");
 
-                CM.alliance.stats.metricsByTurn graphCmd = CM.alliance.stats.metricsByTurn.cmd.create(AllianceMetric.GROUND_PCT.name(), StringMan.join(allowedIds, ","), "7d", null, null);
+                CM.alliance.stats.metricsByTurn graphCmd = CM.alliance.stats.metricsByTurn.cmd.metric(AllianceMetric.GROUND_PCT.name()).coalition(StringMan.join(allowedIds, ",")).time("7d");
                 IMessageBuilder msg = new DiscordChannelIO(channel).create()
                         .embed(title, body.toString())
                         .image("level.png", finalGraphData)

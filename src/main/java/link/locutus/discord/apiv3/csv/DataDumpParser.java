@@ -3,6 +3,9 @@ package link.locutus.discord.apiv3.csv;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import link.locutus.discord.Locutus;
+import link.locutus.discord.Logg;
+import link.locutus.discord.apiv1.enums.NationColor;
 import link.locutus.discord.apiv3.csv.file.CitiesFile;
 import link.locutus.discord.apiv3.csv.file.DataFile;
 import link.locutus.discord.apiv3.csv.file.Dictionary;
@@ -123,6 +126,16 @@ public class DataDumpParser {
         }
     }
 
+    public void withNationFile(long day, Consumer<NationsFile> withFile) throws IOException, ParseException {
+        downloadNationFilesByDay();
+        synchronized (nationFilesByDay) {
+            NationsFile nationFile = nationFilesByDay.get(day);
+            if (nationFile != null) {
+                withFile.accept(nationFile);
+            }
+        }
+    }
+
     public void iterateAll(Predicate<Long> acceptDay,
                             BiConsumer<NationHeader, DataFile<DBNation, NationHeader>.Builder> nationColumns,
                             BiConsumer<CityHeader, DataFile<DBCity, CityHeader>.Builder> cityColumns,
@@ -157,10 +170,10 @@ public class DataDumpParser {
                     onEach.accept(day);
                 }
             } catch (IOException e) {
-                System.out.println("Error reading file " + day + " | " + cityFile.getFilePart());
+                Logg.text("Error reading file " + day + " | " + (cityFile == null ? "no city file" : cityFile.getFilePart()));
                 throw new RuntimeException(e);
             } catch (Throwable e) {
-                System.out.println("Error reading file (2) " + day + " | " + cityFile.getFilePart());
+                Logg.text("Error reading file (2) " + day + " | " + (cityFile == null ? "no city file" : cityFile.getFilePart()));
                 throw e;
             }
         });
@@ -260,7 +273,8 @@ public class DataDumpParser {
         long currentDay = TimeUtil.getDay();
         if (currentDay > lastUpdatedNations) {
             Map<Long, File> downloaded = load("https://politicsandwar.com/data/nations/", new File(Settings.INSTANCE.DATABASE.DATA_DUMP.NATIONS));
-            downloaded.forEach((day, file) -> {
+            downloaded.forEach((time, file) -> {
+                long day = TimeUtil.getDay(time);
                 NationsFile natFile = new NationsFile(file, nationDict);
                 nationFilesByDay.putIfAbsent(day, natFile);
             });
@@ -288,7 +302,8 @@ public class DataDumpParser {
         long currentDay = TimeUtil.getDay();
         if (currentDay > lastUpdatedCities) {
             Map<Long, File> downloaded = load("https://politicsandwar.com/data/cities/", new File(Settings.INSTANCE.DATABASE.DATA_DUMP.CITIES));
-            downloaded.forEach((day, file) -> {
+            downloaded.forEach((time, file) -> {
+                long day = TimeUtil.getDay(time);
                 CitiesFile cityFile = new CitiesFile(file, cityDict);
                 cityFilesByDay.putIfAbsent(day, cityFile);
             });

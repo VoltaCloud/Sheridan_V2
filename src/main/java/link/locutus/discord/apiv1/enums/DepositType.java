@@ -1,6 +1,10 @@
 package link.locutus.discord.apiv1.enums;
 
+import link.locutus.discord.util.MathMan;
+
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.Map;
 
 public enum DepositType {
     DEPOSIT("For funds directly deposited or withdrawn"),
@@ -10,30 +14,45 @@ public enum DepositType {
     IGNORE("Excluded from deposits"),
     TRADE("Sub type of deposits, earmarked as trading funds"),
 
-    CITY(GRANT, "Go to <https://politicsandwar.com/city/create/> and purchase a new city"),
-    PROJECT(GRANT, "Go to <https://politicsandwar.com/nation/projects/> and purchase the desired project"),
-    INFRA(GRANT, "Go to your city <https://politicsandwar.com/cities/> and purchase the desired infrastructure"),
-    LAND(GRANT, "Go to your city <https://politicsandwar.com/cities/> and purchase the desired land"),
-    BUILD(GRANT, "Go to <https://politicsandwar.com/city/improvements/bulk-import/> and import the desired build"),
-    WARCHEST(GRANT, "Go to <https://politicsandwar.com/nation/military/> and purchase the desired units"),
+    CITY(GRANT, "Go to <https://politicsandwar.com/city/create/> and purchase a new city", "A city grant with a value either the number of cities, -1 for all cities, or the city id\n" +
+            "Can be applied alongside another modifier, e.g. `#land=2000 #city=-1` would be 2000 land for all cities",
+            true),
+    PROJECT(GRANT, "Go to <https://politicsandwar.com/nation/projects/> and purchase the desired project",
+            "A project grant with the id or name for a value. `#project=BAUXITEWORKS`", true),
+    INFRA(GRANT, "Go to your city <https://politicsandwar.com/cities/> and purchase the desired infrastructure",
+            "A grant for infra level. Can be added with `#city`", true),
+    LAND(GRANT, "Go to your city <https://politicsandwar.com/cities/> and purchase the desired land", "A grant for a land level. Can be added with `#city`", true),
+    BUILD(GRANT, "Go to <https://politicsandwar.com/city/improvements/bulk-import/> and import the desired build", "A grant for a city build. The value is optional and is equal to `infra << 32 | land` (see: <https://bit-calculator.com/bit-shift-calculator> ). Can be added with `#city` / `#infra` / `#land`", true),
+    WARCHEST(GRANT, "Go to <https://politicsandwar.com/nation/military/> and purchase the desired units", "A grant for war resources", true),
+    RAWS(GRANT, "Raw resources for city consumption", "", true),
 
-    RAWS(GRANT, "Raw resources for city consumption"),
-
-    EXPIRE(GRANT, "Will be excluded from deposits after the specified time e.g. `#expire=60d`"),
-    DECAY(GRANT, "Expires by reducing linearly over time until 0 e.g. `#decay=60d`"),
+    EXPIRE(GRANT, "Will be excluded from deposits after the specified time e.g. `#expire=60d`", "", false),
+    DECAY(GRANT, "Expires by reducing linearly over time until 0 e.g. `#decay=60d`", "", false),
 
     ;
 
     private final String description;
     private DepositType parent;
+    private boolean isClassifier;
+    private String wikiDesc;
 
     DepositType(String description) {
-        this(null, description);
+        this(null, description, "", false);
     }
 
-    DepositType(DepositType parent, String description) {
+    DepositType(DepositType parent, String description, String wikiDesc, boolean isClassifier) {
         this.parent = parent;
         this.description = description;
+        this.isClassifier = isClassifier;
+        this.wikiDesc = wikiDesc.isEmpty() ? description : wikiDesc;
+    }
+
+    public String getWikiDesc() {
+        return wikiDesc;
+    }
+
+    public boolean isClassifier() {
+        return isClassifier;
     }
 
     public String getDescription() {
@@ -76,6 +95,10 @@ public enum DepositType {
             this.amount = amount;
             this.city = city;
             this.ignore = ignore;
+        }
+
+        public DepositTypeInfo clone() {
+            return new DepositTypeInfo(type, amount, city, ignore);
         }
 
         public DepositTypeInfo(DepositType type) {
@@ -142,6 +165,29 @@ public enum DepositType {
 
         public boolean isIgnored() {
             return ignore || type == IGNORE;
+        }
+
+        public DepositTypeInfo applyClassifiers(Map<String, String> parsed) {
+            for (Map.Entry<String, String> noteEntry : parsed.entrySet()) {
+                String noteStr = noteEntry.getKey().substring(1);
+                String valueStr = noteEntry.getValue();
+                boolean ignore = isIgnored();
+                try {
+                    DepositType type = DepositType.valueOf(noteStr.toUpperCase(Locale.ROOT));
+                    if (!type.isClassifier()) {
+                        throw new IllegalArgumentException();
+                    }
+                    long amount = getAmount();
+                    if (valueStr != null && !valueStr.isEmpty() && MathMan.isInteger(valueStr)) {
+                        amount = Long.parseLong(valueStr);
+                    }
+                    return new DepositTypeInfo(type, amount, 0, ignore);
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("Cannot apply modifier: `" + noteStr + "`, only " +
+                            Arrays.stream(DepositType.values()).filter(DepositType::isClassifier).map(DepositType::name).toList());
+                }
+            }
+            return this;
         }
     }
 }

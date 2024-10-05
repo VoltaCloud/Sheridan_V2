@@ -1,5 +1,14 @@
 package link.locutus.discord.util;
 
+import com.google.gson.*;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
+import com.google.gson.JsonPrimitive;
+import com.opencsv.CSVWriter;
+import info.debatty.java.stringsimilarity.CharacterSubstitutionInterface;
+import info.debatty.java.stringsimilarity.WeightedLevenshtein;
+import info.debatty.java.stringsimilarity.experimental.Sift4;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import org.apache.commons.lang3.StringUtils;
 import org.bitbucket.cowwoc.diffmatchpatch.DiffMatchPatch;
@@ -15,20 +24,7 @@ import java.lang.reflect.Array;
 import java.math.BigInteger;
 import java.text.Normalizer;
 import java.time.Duration;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Formatter;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -43,6 +39,16 @@ public class StringMan {
         return msg
                 .replaceAll("(?i)[\\[\\]\"\\n^:\\s,\\.](?=.*[A-Za-z])(?=.*\\d)[0-9A-Fa-f]{14,}(?=[\\[\\]\"\\n$:\\s,\\.]|$)", "XXX")
                 .replaceAll("(key=)(?i)([0-9A-Fa-f]{14,})", "$1XXX");
+    }
+
+    public static String toCsv(List<List<String>> rows) {
+        StringWriter stringWriter = new StringWriter();
+        CSVWriter csvWriter = new CSVWriter(stringWriter, ',');
+
+        for (List<String> row : rows) {
+            csvWriter.writeNext(row.toArray(new String[0]));
+        }
+        return stringWriter.toString();
     }
 
     public static class ConsoleColors {
@@ -634,10 +640,9 @@ public class StringMan {
                                 toAdd = toAdd.substring(1, toAdd.length() - 1);
                         }
                         if (!toAdd.trim().isEmpty()) result.add(toAdd);
-                    } else if (inQuotes) {
-                        result.add("");
                     }
                     start = current + foundLen;
+                    current = start - 1;
                     if (--limit <= 1) {
                         startsWith = null;
                     }
@@ -663,6 +668,79 @@ public class StringMan {
 
     public static String padLeft(String s, int n) {
         return String.format("%1$" + n + "s", s);
+    }
+
+    public static boolean areEqual(Object obj1, Object obj2) {
+        if (obj1 == obj2) {
+            return true;
+        }
+        if (obj1 == null || obj2 == null) {
+            return false;
+        }
+        if (obj1.getClass().isArray() && obj2.getClass().isArray()) {
+            if (obj1 instanceof int[] && obj2 instanceof int[]) {
+                return Arrays.equals((int[]) obj1, (int[]) obj2);
+            } else if (obj1 instanceof long[] && obj2 instanceof long[]) {
+                return Arrays.equals((long[]) obj1, (long[]) obj2);
+            } else if (obj1 instanceof short[] && obj2 instanceof short[]) {
+                return Arrays.equals((short[]) obj1, (short[]) obj2);
+            } else if (obj1 instanceof byte[] && obj2 instanceof byte[]) {
+                return Arrays.equals((byte[]) obj1, (byte[]) obj2);
+            } else if (obj1 instanceof char[] && obj2 instanceof char[]) {
+                return Arrays.equals((char[]) obj1, (char[]) obj2);
+            } else if (obj1 instanceof float[] && obj2 instanceof float[]) {
+                return Arrays.equals((float[]) obj1, (float[]) obj2);
+            } else if (obj1 instanceof double[] && obj2 instanceof double[]) {
+                return Arrays.equals((double[]) obj1, (double[]) obj2);
+            } else if (obj1 instanceof boolean[] && obj2 instanceof boolean[]) {
+                return Arrays.equals((boolean[]) obj1, (boolean[]) obj2);
+            } else {
+                return Arrays.equals((Object[]) obj1, (Object[]) obj2);
+            }
+        }
+        return Objects.equals(obj1, obj2);
+    }
+
+    public static JsonElement toJson(Object obj) {
+        if (obj == null) {
+            return JsonNull.INSTANCE;
+        }
+        if (obj instanceof JsonElement) {
+            return (JsonElement) obj;
+        }
+        if (obj.getClass() == String.class) {
+            return new JsonPrimitive((String) obj);
+        }
+        if (obj instanceof Enum<?>) {
+            return new JsonPrimitive(((Enum<?>) obj).name());
+        }
+        if (obj.getClass().isArray()) {
+            JsonArray arr = new JsonArray();
+            for (int i = 0; i < Array.getLength(obj); i++) {
+                arr.add(toJson(Array.get(obj, i)));
+            }
+            return arr;
+        } else if (obj instanceof Collection<?>) {
+            JsonArray arr = new JsonArray();
+            for (Object element : (Collection<?>) obj) {
+                arr.add(toJson(element));
+            }
+            return arr;
+        } else if (obj instanceof Map) {
+            JsonObject result = new JsonObject();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) obj).entrySet()) {
+                result.add(entry.getKey().toString(), toJson(entry.getValue()));
+            }
+            return result;
+        } else if (obj instanceof Class) {
+            return new JsonPrimitive(((Class<?>) obj).getSimpleName());
+        } else if (obj instanceof Number) {
+            return new JsonPrimitive((Number) obj);
+        } else if (obj instanceof Boolean) {
+            return new JsonPrimitive((Boolean) obj);
+        } else {
+            return new JsonPrimitive(obj.toString());
+        }
     }
 
     public static String getString(Object obj) {
@@ -825,16 +903,21 @@ public class StringMan {
             throw new IllegalArgumentException(e.getMessage() + ". Valid options are: " + StringMan.getString(emum.getEnumConstants()));
         }
     }
-    public static <T extends Enum<?>>  List<Map.Entry<String, String>> autocompleteCommaEnum(Class<T> type, String input, int maxResults) {
+    public static <T extends Enum<?>> List<Map.Entry<String, String>> autocompleteCommaEnum(Class<T> type, String input, int maxResults) {
         Function<String, T> parse = f -> parseUpper(type, f);
         return autocompleteCommaEnum(type, input, parse, maxResults);
     }
 
     public static <T extends Enum>  List<Map.Entry<String, String>> autocompleteCommaEnum(Class<T> type, String input, Function<String, T> parse, int maxResults) {
-        List<T> options = Arrays.asList(type.getEnumConstants());
+        List<T> options = new ArrayList<>(Arrays.asList(type.getEnumConstants()));
         Function<T, String> keyFunc = T::name;
         Function<T, String> valueFunc = keyFunc;
+        Function<String, T> parent = parse;
         return autocompleteComma(input, options, parse, keyFunc, valueFunc, maxResults);
+    }
+
+    public static List<String> autocompleteComma(String input, List<String> options, int maxResults) {
+        return autocompleteComma(input, options, f -> f, f -> f, f -> f, maxResults).stream().map(f -> f.getKey()).toList();
     }
 
     public static <T>  List<Map.Entry<String, String>> autocompleteComma(String input, List<T> options, Function<String, T> parse, Function<T, String> keyFunc, Function<T, String> valueFunc, int maxResults) {
@@ -850,14 +933,12 @@ public class StringMan {
         for (int i = 0; i < len; i++) {
             String arg = split[i];
             T parsed = parse.apply(arg);
-            // Dont modify the original list
             if (options == optionsOriginal) options = new ArrayList<>(options);
             options.remove(parsed);
             prefixArgs.add(parsed);
         }
         String prefixEnd = prefixArgs.isEmpty() ? "" : ",";
         String prefixKey = prefixArgs.stream().map(keyFunc).collect(Collectors.joining(",")) + prefixEnd;
-        String prefixValue = prefixArgs.stream().map(valueFunc).collect(Collectors.joining(",")) + prefixEnd;
 
         options = getClosest(trailing, options, true);
         if (options.size() > maxResults) {
@@ -1015,6 +1096,49 @@ public class StringMan {
             }
         }
         return count;
+    }
+
+    private static final String[] QWERTY_KEYBOARD = {
+            "1234567890",
+            "qwertyuiop",
+            "asdfghjkl",
+            "zxcvbnm"
+    };
+
+    private static int[] getCharPosition(char c) {
+        for (int i = 0; i < QWERTY_KEYBOARD.length; i++) {
+            int index = QWERTY_KEYBOARD[i].indexOf(c);
+            if (index != -1) {
+                return new int[]{i, index};
+            }
+        }
+        return new int[]{-1, -1};
+    }
+
+    private static double getDistance(char c1, char c2) {
+        int[] pos1 = getCharPosition(c1);
+        int[] pos2 = getCharPosition(c2);
+
+        if (pos1[0] == -1 || pos2[0] == -1) {
+            return 1.0;
+        }
+
+        int dx = pos1[1] - pos2[1];
+        int dy = pos1[0] - pos2[0];
+
+        return MathMan.sqrtApprox(dx * dx + dy * dy);
+    }
+
+    public static double distanceWeightedQwertSift4(String a, String b) {
+        // combine wl and sift4
+        WeightedLevenshtein wl = new WeightedLevenshtein(
+                new CharacterSubstitutionInterface() {
+                    public double cost(char c1, char c2) {
+                        return getDistance(c1, c2);
+                    }
+                });
+        Sift4 s4 = new Sift4();
+        return (wl.distance(a, b) + s4.distance(a, b)) / 2;
     }
 
     public static int getLevenshteinDistance(String s, String t) {

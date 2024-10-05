@@ -42,11 +42,11 @@ public class DBCity implements ICity {
 
     public DBCity(int nation_id) {
         this.nation_id = nation_id;
-        this.buildings3 = new byte[Buildings.size()];
+        this.buildings3 = new byte[PW.City.Building.SIZE];
     }
 
     public void setBuilding(Building building, int amt) {
-        if (buildings3.length != Buildings.size()) {
+        if (buildings3.length != PW.City.Building.SIZE) {
             buildings3 = this.toFull();
         }
         buildings3[building.ordinal()] = (byte) amt;
@@ -65,7 +65,7 @@ public class DBCity implements ICity {
     }
 
     public DBCity(City cityV3) {
-        this.buildings3 = new byte[Buildings.size()];
+        this.buildings3 = new byte[PW.City.Building.SIZE];
         set(cityV3);
     }
 
@@ -83,7 +83,7 @@ public class DBCity implements ICity {
     }
 
     public void condense() {
-        if (buildings3.length != Buildings.size()) {
+        if (buildings3.length != PW.City.Building.SIZE) {
             return;
         }
         for (byte b : buildings3) {
@@ -101,11 +101,11 @@ public class DBCity implements ICity {
     }
 
     public byte[] toFull() {
-        if (this.buildings3.length == Buildings.size()) {
+        if (this.buildings3.length == PW.City.Building.SIZE) {
             return buildings3;
         }
         // convert to full size
-        byte[] full = new byte[Buildings.size()];
+        byte[] full = new byte[PW.City.Building.SIZE];
         for (int i = 0; i < full.length; i++) {
             full[i] = (byte) getBuildingOrdinal(i);
         }
@@ -121,7 +121,7 @@ public class DBCity implements ICity {
     @Command(desc = "Number of buildings in this city")
     public int getNumBuildings() {
         int total = 0;
-        if (buildings3.length == Buildings.size()) {
+        if (buildings3.length == PW.City.Building.SIZE) {
             for (byte amt : buildings3) total += amt;
         } else {
             // two buildings per byte
@@ -135,7 +135,7 @@ public class DBCity implements ICity {
     }
 
     public int getBuildingOrdinal(int ordinal) {
-        if (buildings3.length == Buildings.size()) {
+        if (buildings3.length == PW.City.Building.SIZE) {
             return buildings3[ordinal];
         } else {
             int byteIndex = ordinal >> 1;
@@ -328,11 +328,11 @@ public class DBCity implements ICity {
     public boolean runChangeEvents(int nationId, DBCity previous, Consumer<Event> eventConsumer) {
         if (previous == null) {
             if (eventConsumer != null) {
-                DBNation nation = DBNation.getById(nationId);
-//                if (nation != null && nation.active_m() > 4880) {
-//                    new Exception().printStackTrace();
-////                    AlertUtil.error("Invalid city create", "city for " + nationId + " | " + this);
-//                }
+//                DBNation nation = DBNation.getById(nationId);
+////                if (nation != null && nation.active_m() > 4880) {
+////                    new Exception().printStackTrace();
+//////                    AlertUtil.error("Invalid city create", "city for " + nationId + " | " + this);
+////                }
                 if (this.created > System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)) {
                     Locutus.imp().getNationDB().setNationActive(nationId, this.created, eventConsumer);
                     eventConsumer.accept(new CityCreateEvent(nationId, this));
@@ -455,6 +455,9 @@ public class DBCity implements ICity {
         if (obj instanceof ArrayUtil.IntKey key) {
             return key.key == id;
         }
+        if (obj instanceof Integer) {
+            return (int) obj == id;
+        }
         return false;
     }
 
@@ -552,7 +555,7 @@ public class DBCity implements ICity {
 
     @Override
     public int calcPollution(Predicate<Project> hasProject) {
-        return PW.City.getPollution(hasProject, this::getBuilding, nuke_turn);
+        return PW.City.getPollution(hasProject, this::getBuilding, PW.City.getNukePollution(nuke_turn));
     }
 
     @Command(desc = "Get city commerce")
@@ -618,7 +621,7 @@ public class DBCity implements ICity {
 
     @Override
     public double calcDisease(Predicate<Project> hasProject) {
-        double pollution = PW.City.getPollution(hasProject, this::getBuilding, nuke_turn);
+        double pollution = PW.City.getPollution(hasProject, this::getBuilding, PW.City.getNukePollution(nuke_turn));
         return PW.City.getDisease(hasProject, this::getBuilding, infra_cents, land_cents, pollution);
     }
 
@@ -629,7 +632,7 @@ public class DBCity implements ICity {
 
     @Override
     public int calcPopulation(Predicate<Project> hasProject) {
-        int pollution = PW.City.getPollution(hasProject, this::getBuilding, nuke_turn);
+        int pollution = PW.City.getPollution(hasProject, this::getBuilding, PW.City.getNukePollution(nuke_turn));
         double disease = PW.City.getDisease(hasProject, this::getBuilding, infra_cents, land_cents, pollution);
         int commerce = PW.City.getCommerce(hasProject, this::getBuilding);
         double crime = PW.City.getCrime(hasProject, this::getBuilding, infra_cents, commerce);

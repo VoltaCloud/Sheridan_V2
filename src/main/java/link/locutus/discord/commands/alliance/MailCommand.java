@@ -5,12 +5,14 @@ import link.locutus.discord.apiv1.core.ApiKeyPool;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.commands.manager.Noformat;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageBuilder;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.config.Settings;
 import link.locutus.discord.db.GuildDB;
 import link.locutus.discord.db.entities.DBNation;
+import link.locutus.discord.gpt.GPTUtil;
 import link.locutus.discord.user.Roles;
 import link.locutus.discord.util.MarkupUtil;
 import link.locutus.discord.util.discord.DiscordUtil;
@@ -19,6 +21,7 @@ import link.locutus.discord.util.offshore.Auth;
 import link.locutus.discord.util.task.MailRespondTask;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.User;
+import org.json.JSONObject;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -29,6 +32,11 @@ import java.util.concurrent.ExecutionException;
 public class MailCommand extends Command implements Noformat {
     public MailCommand() {
         super("mail", CommandCategory.GAME_INFO_AND_TOOLS, CommandCategory.INTERNAL_AFFAIRS);
+    }
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.mail.send.cmd);
     }
 
     @Override
@@ -75,6 +83,7 @@ public class MailCommand extends Command implements Noformat {
                 String content = DiscordUtil.trimContent(fullCommandRaw);
                 String body = content.substring(content.indexOf(' ', content.indexOf("message/id=")) + 1);
 
+                GPTUtil.checkThrowModeration(body);
                 String result = new MailRespondTask(auth, arg0, messageId, body, null).call();
                 return "Mail: " + result;
             }
@@ -85,7 +94,6 @@ public class MailCommand extends Command implements Noformat {
             }
 
             String message = StringMan.join(args.subList(2, args.size()), " ");
-
             message = MarkupUtil.transformURLIntoLinks(message);
             String subject = args.get(1);
 
@@ -107,7 +115,6 @@ public class MailCommand extends Command implements Noformat {
 
             if (!flags.contains('f')) {
                 String title = "Send " + nations.size() + " messages.";
-                String pending = Settings.commandPrefix(true) + "pending '" + title + "' " + DiscordUtil.trimContent(fullCommandRaw).replaceFirst(" ", " -f ");
 
                 Set<Integer> alliances = new LinkedHashSet<>();
                 for (DBNation nation : nations) alliances.add(nation.getAlliance_id());
@@ -123,14 +130,16 @@ public class MailCommand extends Command implements Noformat {
                 String body = "subject: " + subject + "\n" +
                         "body: ```" + message + "```";
 
+                JSONObject json = CM.mail.send.cmd.force("true").message(message).subject(subject).nations(arg0).toJson();
                 channel.create().embed(embedTitle, body)
-                                .commandButton(pending, "Next").send();
+                                .confirmation(json).send();
                 return null;
             }
 
             if (!Roles.ADMIN.hasOnRoot(author)) {
                 message += "\n\n<i>This message was sent by: " + author.getName() + "</i>";
             }
+            GPTUtil.checkThrowModeration(subject + " " + message);
 
             CompletableFuture<IMessageBuilder> msgFuture = channel.sendMessage("Sending to...");
             IMessageBuilder msg = null;

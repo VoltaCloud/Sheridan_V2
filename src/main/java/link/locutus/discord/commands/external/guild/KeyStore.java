@@ -3,6 +3,7 @@ package link.locutus.discord.commands.external.guild;
 import link.locutus.discord.commands.manager.Command;
 import link.locutus.discord.commands.manager.CommandCategory;
 import link.locutus.discord.commands.manager.Noformat;
+import link.locutus.discord.commands.manager.v2.command.CommandRef;
 import link.locutus.discord.commands.manager.v2.command.IMessageIO;
 import link.locutus.discord.commands.manager.v2.impl.pw.refs.CM;
 import link.locutus.discord.commands.manager.v2.impl.pw.commands.SettingCommands;
@@ -39,6 +40,12 @@ public class KeyStore extends Command implements Noformat {
                 "Add `-a` to list all settings.";
     }
 
+
+    @Override
+    public List<CommandRef> getSlashReference() {
+        return List.of(CM.settings.info.cmd);
+    }
+
     @Override
     public String onCommand(Guild guild, IMessageIO channel, User author, DBNation me, String fullCommandRaw, List<String> args, Set<Character> flags) throws Exception {
         return onCommand(channel, guild, author, me, args, flags);
@@ -58,6 +65,6 @@ public class KeyStore extends Command implements Noformat {
             value = StringMan.join(args.subList(1, args.size()), " ");
         }
         boolean listAll = flags.contains('a');
-        return SettingCommands.info(io, guild, author, me, setting, value, listAll);
+        return SettingCommands.info(guild, author, setting, value, listAll);
     }
 }
